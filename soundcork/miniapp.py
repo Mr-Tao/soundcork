@@ -55,7 +55,7 @@ def decode_cookie_value(value: str | None, default: str | None = None) -> str | 
 
 def get_device_image(product_code: str) -> str:
     """Map product code to device image file."""
-    return DEVICE_IMAGE_MAP.get(product_code.lower(), DEFAULT_DEVICE_IMAGE)
+    return DEVICE_IMAGE_MAP.get(product_code.strip().lower(), DEFAULT_DEVICE_IMAGE)
 
 
 def get_miniapp_router(
@@ -264,11 +264,7 @@ def get_miniapp_router(
                     online = "offline"
                     cd = my_combined_devices[device_id]
                     device_info = datastore.get_device_info(account_id, device_id)
-                    if (
-                        cd.online
-                        and cd.in_soundcork
-                        and (cd.marge_server == "Soundcork")
-                    ):
+                    if cd.online and cd.in_soundcork:
                         online = "online"
                     devices.append(
                         {
