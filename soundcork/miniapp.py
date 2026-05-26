@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 NOW_PLAYING_TIMEOUT = 3.0
 
+LEGACY_SELECTION_COOKIES = (
+    "soundcork_selected_content_item_name",
+    "soundcork_selected_content_item_id",
+    "soundcork_selected_device",
+    "soundcork_selected_device_id",
+    "soundcork_is_playing",
+)
+
 
 @dataclass
 class NowPlaying:
@@ -56,6 +64,15 @@ def decode_cookie_value(value: str | None, default: str | None = None) -> str | 
 def get_device_image(product_code: str) -> str:
     """Map product code to device image file."""
     return DEVICE_IMAGE_MAP.get(product_code.strip().lower(), DEFAULT_DEVICE_IMAGE)
+
+
+def delete_cookies(response, cookie_names: tuple[str, ...]) -> None:
+    for cookie_name in cookie_names:
+        response.delete_cookie(cookie_name)
+
+
+def clear_legacy_selection(response) -> None:
+    delete_cookies(response, LEGACY_SELECTION_COOKIES)
 
 
 def get_miniapp_router(
@@ -194,6 +211,7 @@ def get_miniapp_router(
                 httponly=False,  # Allow JS to read for display
                 samesite="strict",
             )
+            clear_legacy_selection(response)
 
             logger.info(f"User logged in to account {account_id}")
             return response
@@ -492,6 +510,7 @@ def get_miniapp_router(
         response = RedirectResponse(url="/miniapp/login", status_code=303)
         response.delete_cookie("soundcork_account_id")
         response.delete_cookie("soundcork_account_label")
+        clear_legacy_selection(response)
         logger.info("User logged out")
         return response
 
