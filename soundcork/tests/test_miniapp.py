@@ -77,6 +77,14 @@ class FakeSpeakers:
         self.play_calls.append((device_id, content_item_id))
         return self.play_result
 
+    def get_now_playing_status(self, device_id: str):
+        assert device_id == DEVICE_ID
+        return None
+
+    def stop_playback(self, device_id: str) -> bool:
+        assert device_id == DEVICE_ID
+        return True
+
 
 class FakePrimer:
     enabled = True
@@ -117,6 +125,15 @@ def set_cookie_headers(response) -> list[str]:
     return response.headers.get_list("set-cookie")
 
 
+def cookie_headers_text(response) -> str:
+    return "\n".join(set_cookie_headers(response))
+
+
+def assert_cookie_deleted(cookies: str, cookie_name: str) -> None:
+    assert f"{cookie_name}=" in cookies
+    assert "Max-Age=0" in cookies
+
+
 def test_dashboard_decodes_display_cookies(monkeypatch):
     client, _speakers = make_client(monkeypatch)
 
@@ -134,6 +151,33 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
     assert "Účet ložnice" in response.text
     assert "ložnice" in response.text
     assert "Rádio Proglas" in response.text
+
+
+def test_login_clears_stale_selection_cookies(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/login",
+        data={"account_id": ACCOUNT_ID},
+        headers={
+            "Cookie": (
+                "soundcork_selected_device=Bos%C3%ADk; "
+                "soundcork_selected_device_id=stale-device; "
+                "soundcork_selected_content_item_name=BBC; "
+                "soundcork_selected_content_item_id=99; "
+                "soundcork_is_playing=true"
+            )
+        },
+        follow_redirects=False,
+    )
+
+    cookies = cookie_headers_text(response)
+    assert response.status_code == 303
+    assert_cookie_deleted(cookies, "soundcork_selected_device")
+    assert_cookie_deleted(cookies, "soundcork_selected_device_id")
+    assert_cookie_deleted(cookies, "soundcork_selected_content_item_name")
+    assert_cookie_deleted(cookies, "soundcork_selected_content_item_id")
+    assert_cookie_deleted(cookies, "soundcork_is_playing")
 
 
 def test_play_primes_spotify_before_playback_when_primer_configured(monkeypatch):
