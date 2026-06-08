@@ -4,13 +4,15 @@ Endpoints for a miniapp UI.
 
 import asyncio
 import logging
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from soundcork.constants import DEFAULT_DEVICE_IMAGE, DEVICE_IMAGE_MAP
@@ -24,6 +26,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NOW_PLAYING_TIMEOUT = 3.0
+STARTED_OPTIMISTIC_SECONDS = 3.0
+ARTWORK_PROXY_TIMEOUT = 5.0
+ARTWORK_PROXY_MAX_BYTES = 2_000_000
+ARTWORK_PROXY_HOST_SUFFIXES = ("tunein.com", "radiotime.com")
 
 LEGACY_SELECTION_COOKIES = (
     "soundcork_selected_content_item_name",
@@ -66,6 +72,42 @@ def get_device_image(product_code: str) -> str:
     return DEVICE_IMAGE_MAP.get(product_code.strip().lower(), DEFAULT_DEVICE_IMAGE)
 
 
+def should_proxy_artwork_url(url: str | None) -> bool:
+    """Return True for external artwork hosts known to need browser-safe proxying."""
+    if not url:
+        return False
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+
+    hostname = (parsed.hostname or "").lower()
+    return any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in ARTWORK_PROXY_HOST_SUFFIXES
+    )
+
+
+def miniapp_artwork_url(url: str | None) -> str:
+    """Return a browser-friendly artwork URL for the miniapp."""
+    if not url:
+        return ""
+
+    if not should_proxy_artwork_url(url):
+        return url
+
+    return f"/miniapp/artwork?url={quote(url, safe='')}"
+
+
+def use_started_state(started: bool, started_at: float | None) -> bool:
+    """Return True while a just-started playback action may still have stale metadata."""
+    if not started or started_at is None:
+        return False
+
+    elapsed = time.time() - started_at
+    return 0 <= elapsed <= STARTED_OPTIMISTIC_SECONDS
+
+
 def delete_cookies(response, cookie_names: tuple[str, ...]) -> None:
     for cookie_name in cookie_names:
         response.delete_cookie(cookie_name)
@@ -81,8 +123,48 @@ def get_miniapp_router(
     zeroconf_primer: "ZeroConfPrimer | None" = None,
 ):
     templates = Jinja2Templates(directory="templates")
+    templates.env.globals["miniapp_artwork_url"] = miniapp_artwork_url
 
     router = APIRouter(tags=["miniapp"])
+
+    @router.get("/miniapp/artwork")
+    async def artwork_proxy(url: str = Query(...)):
+        """Proxy selected station artwork so browsers do not block CDN images."""
+        if not should_proxy_artwork_url(url):
+            raise HTTPException(status_code=400, detail="Unsupported artwork URL")
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=ARTWORK_PROXY_TIMEOUT,
+                follow_redirects=True,
+            ) as client:
+                upstream = await client.get(
+                    url,
+                    headers={"User-Agent": "SoundCork miniapp artwork proxy"},
+                )
+                upstream.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.warning(f"Could not fetch miniapp artwork {url}: {e}")
+            raise HTTPException(status_code=502, detail="Artwork fetch failed") from e
+
+        content_type = (
+            upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        )
+        if not content_type.startswith("image/"):
+            logger.warning(
+                f"Miniapp artwork URL {url} returned non-image content type {content_type}"
+            )
+            raise HTTPException(status_code=502, detail="Artwork URL is not an image")
+
+        if len(upstream.content) > ARTWORK_PROXY_MAX_BYTES:
+            logger.warning(f"Miniapp artwork URL {url} returned too much data")
+            raise HTTPException(status_code=502, detail="Artwork is too large")
+
+        return Response(
+            content=upstream.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     def prime_spotify_before_play(
         account_id: str | None,
@@ -124,6 +206,24 @@ def get_miniapp_router(
                 "Spotify ZeroConf pre-play priming failed for device %s",
                 device_id,
             )
+
+    def play_selected_content_item(
+        account_id: str | None,
+        device_id: str,
+        content_item_id: str,
+        *,
+        log_context: str,
+    ) -> bool:
+        prime_spotify_before_play(account_id, device_id, content_item_id)
+
+        if speakers.play_content_item(device_id, content_item_id):
+            logger.info(
+                f"Started playback from {log_context}: content_item {content_item_id} on device {device_id}"
+            )
+            return True
+
+        logger.error(f"Failed to start playback from {log_context}")
+        return False
 
     @router.get("/miniapp", response_class=HTMLResponse)
     async def main_page(request: Request):
@@ -227,6 +327,8 @@ def get_miniapp_router(
         request: Request,
         selected_content_item_id: str | None = Query(None),
         selected_device_id: str | None = Query(None),
+        started: bool = Query(False),
+        started_at: float | None = Query(None),
         stopped: bool = Query(False),
     ):
         """Display dashboard with devices and presets.
@@ -239,6 +341,13 @@ def get_miniapp_router(
 
             selected_device_id: The speaker, if one is selected
                 in the user's context.
+
+            started: If playback on the current device was just started
+                by the user's request. Passing as an argument to avoid
+                timing issues in the query.
+
+            started_at: Server timestamp for the playback start redirect. Keeps
+                the optimistic started state short-lived if the page is reloaded.
 
             stopped: If the stream on the current device was just stopped
                 by the user's request. Passing as an argument to avoid
@@ -271,7 +380,20 @@ def get_miniapp_router(
             }
 
             devices: list[dict[str, str]] = []
-            presets: list["Preset"] = []
+            try:
+                presets = datastore.get_presets(account_id)
+            except Exception as e:
+                logger.warning(f"Error getting presets for account {account_id}: {e}")
+                presets = []
+            selected_preset = next(
+                (
+                    preset
+                    for preset in presets
+                    if str(preset.id) == selected_content_item_id
+                ),
+                None,
+            )
+            show_started_state = use_started_state(started, started_at)
 
             for device_id in my_combined_devices.keys():
                 try:
@@ -279,6 +401,19 @@ def get_miniapp_router(
                         np = NowPlaying("", "", "", 0, 0, False)
                     else:
                         np = await _get_now_playing(device_id)
+                        if (
+                            show_started_state
+                            and device_id == selected_device_id
+                            and selected_preset
+                        ):
+                            np = NowPlaying(
+                                selected_preset.name,
+                                selected_preset.container_art or "",
+                                "PLAY_STATE",
+                                np.volume_actual,
+                                np.volume_target,
+                                np.is_muted,
+                            )
                     online = "offline"
                     cd = my_combined_devices[device_id]
                     device_info = datastore.get_device_info(account_id, device_id)
@@ -298,14 +433,6 @@ def get_miniapp_router(
                             "now_playing_is_muted": str(np.is_muted),
                         }
                     )
-
-                    if not presets:
-                        try:
-                            presets = datastore.get_presets(account_id)
-                        except Exception as e:
-                            logger.warning(
-                                f"Error getting presets for device {device_id}: {e}"
-                            )
 
                 except Exception as e:
                     logger.error(f"Error getting device info for {device_id}: {e}")
@@ -361,8 +488,13 @@ def get_miniapp_router(
             logger.warning(f"Timeout getting now playing status for {device_id}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
 
-        if np:
+        try:
             volume = speakers.get_volume(device_id)
+        except Exception as e:
+            logger.warning(f"Error getting volume for {device_id}: {e}")
+            volume = None
+
+        if np:
             return NowPlaying(
                 f"{np.StationName or np.ContentItem.Name}",
                 np.ContainerArtUrl or "",
@@ -372,7 +504,14 @@ def get_miniapp_router(
                 volume.IsMuted if volume else False,
             )
         else:
-            return NowPlaying("", "", "", 0, 0, False)
+            return NowPlaying(
+                "",
+                "",
+                "",
+                volume.Actual if volume else 0,
+                volume.Target if volume else 0,
+                volume.IsMuted if volume else False,
+            )
 
     @router.post("/miniapp/select-content-item")
     async def select_content_item(
@@ -395,6 +534,14 @@ def get_miniapp_router(
             params: dict[str, str] = {"selected_content_item_id": content_item_id}
             if selected_device_id:
                 params["selected_device_id"] = selected_device_id
+                if play_selected_content_item(
+                    request.cookies.get("soundcork_account_id"),
+                    selected_device_id,
+                    content_item_id,
+                    log_context="preset click",
+                ):
+                    params["started"] = "true"
+                    params["started_at"] = f"{time.time():.3f}"
             qs = urllib.parse.urlencode(params)
             return RedirectResponse(url=f"/miniapp/dashboard?{qs}", status_code=303)
 
@@ -444,23 +591,20 @@ def get_miniapp_router(
                 return RedirectResponse(url="/miniapp/dashboard", status_code=303)
 
             account_id = request.cookies.get("soundcork_account_id")
-
-            prime_spotify_before_play(
-                account_id, selected_device_id, selected_content_item_id
+            started = play_selected_content_item(
+                account_id,
+                selected_device_id,
+                selected_content_item_id,
+                log_context="play button",
             )
-
-            # Play the content_item
-            if speakers.play_content_item(selected_device_id, selected_content_item_id):
-                logger.info(
-                    f"Started playback: content_item {selected_content_item_id} on device {selected_device_id}"
-                )
-            else:
-                logger.error("Failed to start playback")
 
             params = {
                 "selected_device_id": selected_device_id,
                 "selected_content_item_id": selected_content_item_id,
             }
+            if started:
+                params["started"] = "true"
+                params["started_at"] = f"{time.time():.3f}"
             return RedirectResponse(
                 url=f"/miniapp/dashboard?{urllib.parse.urlencode(params)}",
                 status_code=303,
