@@ -380,10 +380,12 @@ def list_management_devices(
             if account_filter and fresh.account_id != account_filter:
                 continue
 
-            device = devices.get(fresh.device_id)
-            if device:
-                _merge_fresh_info(device, fresh, base_url, source="datastore+discovery")
-                _merge_fresh_sources(device, hostname, fetch_sources)
+            existing_device = devices.get(fresh.device_id)
+            if existing_device:
+                _merge_fresh_info(
+                    existing_device, fresh, base_url, source="datastore+discovery"
+                )
+                _merge_fresh_sources(existing_device, hostname, fetch_sources)
                 continue
 
             marge_server = _marge_server(fresh.marge_url, base_url)
