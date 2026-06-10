@@ -13,6 +13,8 @@ from soundcork.model import (
     BmxNavSection,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
+    BmxResponse,
+    Service,
     Stream,
     Track,
 )
@@ -45,6 +47,17 @@ def bmx_services_json(settings: Settings) -> str:
             "{MEDIA_SERVER}", f"{settings.base_url}/media"
         ).replace("{BMX_SERVER}", settings.base_url)
         return bmx_response_json
+
+
+def bmx_services_response(settings: Settings) -> BmxResponse:
+    return BmxResponse.model_validate_json(bmx_services_json(settings))
+
+
+def bmx_service_by_name(settings: Settings, service_name: str) -> Service:
+    for service in bmx_services_response(settings).bmx_services:
+        if service.id.name == service_name:
+            return service
+    raise KeyError(f"Unknown BMX service {service_name}")
 
 
 def tunein_is_opml_uri(tunein_uri: str) -> bool:

@@ -53,6 +53,22 @@ class Settings(BaseSettings):
     #  used for development/debugging
     unhandled_log_dir: str = ""
 
+    # Radio Browser catalog (optional anonymous BMX provider)
+    radio_browser_api_base_urls: str = Field(
+        default="https://all.api.radio-browser.info",
+        validation_alias=AliasChoices(
+            "radio_browser_api_base_urls",
+            "RADIO_BROWSER_API_BASE_URLS",
+        ),
+    )
+    radio_browser_user_agent: str = Field(
+        default="SoundCork/1.0 (+https://github.com/deborahgu/soundcork)",
+        validation_alias=AliasChoices(
+            "radio_browser_user_agent",
+            "RADIO_BROWSER_USER_AGENT",
+        ),
+    )
+
     model_config = SettingsConfigDict(
         # `.env.private` takes priority over `.env.shared`
         env_file=(".env.shared", ".env.private")

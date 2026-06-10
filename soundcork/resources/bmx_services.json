@@ -201,14 +201,13 @@
           "enabled": true
         }
       },
-      "baseUrl": "https://all.api.radio-browser.info/soundtouch",
+      "baseUrl": "{BMX_SERVER}/bmx/radio-browser",
       "id": {
         "name": "RADIO_BROWSER",
         "value": 39
       },
       "streamTypes": [
-        "liveRadio",
-        "onDemand"
+        "liveRadio"
       ]
     }
   ]
