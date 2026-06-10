@@ -868,6 +868,19 @@ def bmx_radio_browser_playback(station_id: str) -> BmxPlaybackResponse:
 
 
 @app.post(
+    "/bmx/radio-browser/v1/token",
+    tags=["bmx"],
+)
+def bmx_radio_browser_token(request: Request) -> dict[str, object]:
+    return {
+        "access_token": "radio-browser-anonymous",
+        "refresh_token": "radio-browser-anonymous",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+    }
+
+
+@app.post(
     "/bmx/radio-browser/v1/report",
     status_code=HTTPStatus.OK,
     tags=["bmx"],

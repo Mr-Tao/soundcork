@@ -31,6 +31,17 @@ Radio Browser station UUIDs are used as stable identifiers. The legacy numeric
 `id` fields are intentionally not used because they are not stable across Radio
 Browser API mirrors.
 
+Navigation and search responses intentionally expose station playback items as:
+
+```xml
+<ContentItem source="RADIO_BROWSER" type="stationurl" location="/stations/byuuid/<uuid>"/>
+```
+
+That is the SoundTouch-compatible station location shape. The
+`/bmx/radio-browser/v1/playback/station/{stationuuid}` endpoint remains
+available as a server-side BMX playback response helper, but that URL should not
+be used as the `ContentItem` location sent to a speaker.
+
 ## API behavior
 
 SoundCork follows the public Radio Browser API guidance:
@@ -62,15 +73,9 @@ RADIO_BROWSER_USER_AGENT=SoundCork/1.0 (+https://github.com/deborahgu/soundcork)
 `RADIO_BROWSER_API_BASE_URLS` can contain a comma-separated list. SoundCork tries
 the configured entries in randomized order.
 
-## Legacy direct speaker experiment
+## Direct speaker experiment
 
-Older notes described manually selecting:
-
-```xml
-<ContentItem source="RADIO_BROWSER" type="stationurl" location="/stations/byuuid/<uuid>"/>
-```
-
-That direct `ContentItem` path was useful for experiments, but the current
-recommended integration is the local BMX provider above. It keeps Radio Browser
-API details in SoundCork core and lets Stockholm use the same provider-agnostic
-BMX browse/search/playback flow as other catalog services.
+The `RADIO_BROWSER` source must be present in the speaker's active sources
+before these content items can be selected. If the source was added while the
+speaker was already running, send a `sourcesUpdated` notification or reboot the
+speaker before testing playback.

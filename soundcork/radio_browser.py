@@ -446,7 +446,7 @@ def station_section(
 
 
 def station_item(station: RadioBrowserStation) -> BmxNavItem:
-    href = f"/v1/playback/station/{station.uuid}"
+    href = f"/stations/byuuid/{station.uuid}"
     return BmxNavItem(
         links={
             "bmx_playback": {

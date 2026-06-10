@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 from soundcork.bmx import bmx_service_by_name
 from soundcork.bmx_providers import RadioBrowserCatalogProvider, TuneInProvider
 from soundcork.radio_browser import (
@@ -71,6 +73,22 @@ def test_radio_browser_service_uses_local_soundcork_base_url(monkeypatch):
     assert service.streamTypes == ["liveRadio"]
 
 
+def test_radio_browser_token_endpoint_supports_anonymous_bmx_account(monkeypatch):
+    monkeypatch.chdir("soundcork")
+    from soundcork.main import app
+
+    response = TestClient(app).post(
+        "/bmx/radio-browser/v1/token",
+        json={"grant_type": "password", "username": "", "password": "", "is_anonymous": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"]
+    assert payload["refresh_token"]
+    assert payload["token_type"] == "Bearer"
+
+
 def test_tunein_catalog_provider_delegates_search(monkeypatch):
     expected = object()
 
@@ -110,7 +128,10 @@ def test_radio_browser_top_level_exposes_browse_and_station_items():
     )
     assert popular.name == "Popular stations"
     assert popular.items[0].links.bmx_playback.href == (
-        "/v1/playback/station/9610c454-0601-11e8-ae97-52543be04c81"
+        "/stations/byuuid/9610c454-0601-11e8-ae97-52543be04c81"
+    )
+    assert popular.items[0].links.bmx_preset.href == (
+        "/stations/byuuid/9610c454-0601-11e8-ae97-52543be04c81"
     )
 
 
