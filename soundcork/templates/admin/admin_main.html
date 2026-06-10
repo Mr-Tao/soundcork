@@ -10,7 +10,7 @@
                 <li><strong>REST /info</strong> means the speaker answered its HTTP API on port 8090. This is enough to inspect live state, but not enough to rewrite Bose URLs.</li>
                 <li><strong>SSH</strong> means root shell access is available on port 22. Soundcork can copy the override XML and reboot the speaker.</li>
                 <li><strong>Telnet CLIServer</strong> means the non-rooted SoundTouch command port 17000 is reachable. Soundcork can ask the speaker to update its Bose URLs and reboot.</li>
-                <li><strong>Repair Soundcork routing</strong> sets the Bose service URLs to this Soundcork instance. Use it when Live Marge is not Soundcork and either SSH or Telnet CLIServer is available.</li>
+                <li><strong>Switch to Soundcork</strong> sets the Bose service URLs to this Soundcork instance. Use it when Live Marge is not Soundcork and either SSH or Telnet CLIServer is available.</li>
             </ul>
         </details>
 
@@ -60,7 +60,7 @@
                           {% endif %}
                         {% elif device.repair_available %}
                         <form action="/admin/switchToSoundcork/{{device.id}}" method="POST">
-                            <input type="submit" value="Repair Soundcork routing">
+                            <input type="submit" value="Switch to Soundcork">
                         </form>
                         {% elif device.marge_server == "Soundcork" %}
                         Already using Soundcork
@@ -124,7 +124,7 @@
                         </form>
                         {% elif device.repair_available %}
                         <form action="/admin/switchToSoundcork/{{device.id}}" method="POST">
-                            <input type="submit" value="Repair Soundcork routing">
+                            <input type="submit" value="Switch to Soundcork">
                         </form>
                         {% elif device.marge_server != "Soundcork" %}
                         Needs SSH or Telnet CLIServer
