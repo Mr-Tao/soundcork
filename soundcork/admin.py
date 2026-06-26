@@ -4,7 +4,6 @@ Endpoints for an admin UI.
 """
 
 import logging
-import time
 from http import HTTPStatus
 from typing import Annotated
 
@@ -231,8 +230,6 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
         else:
             logger.warning("cannot switch %s to Soundcork: no host known", device_id)
 
-        # wait a little for the speaker to restart
-        time.sleep(10)
         return RedirectResponse(
             url=f"/admin/wait/{device_id}/0", status_code=HTTPStatus.FOUND
         )
@@ -243,11 +240,6 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
         # only wait up to 120 seconds
         if elapsed >= 120:
             return RedirectResponse(url=f"/admin/", status_code=HTTPStatus.FOUND)
-
-        if elapsed == 0:
-            # for the first request wait 40 seconds
-            time.sleep(40)
-            elapsed = 40
 
         combined_device = speakers.all_devices().get(device_id)
         if combined_device:

@@ -130,7 +130,6 @@ def test_switch_to_soundcork_uses_telnet_when_ssh_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         "soundcork.admin.override_speaker_config_non_rooted", fake_non_rooted
     )
-    monkeypatch.setattr("soundcork.admin.time.sleep", lambda _seconds: None)
 
     client, speakers = make_client(monkeypatch)
     response = client.post(
@@ -141,3 +140,17 @@ def test_switch_to_soundcork_uses_telnet_when_ssh_is_unavailable(monkeypatch):
     assert response.headers["location"] == f"/admin/wait/{DEVICE_ID}/0"
     assert called_hosts == [DEVICE_IP]
     assert speakers.cleared_devices == [DEVICE_ID]
+
+
+def test_wait_page_returns_immediately_for_client_side_polling(monkeypatch):
+    monkeypatch.setattr(
+        "soundcork.admin.list_management_devices",
+        lambda *_args, **_kwargs: management_devices_response(),
+    )
+
+    client, _speakers = make_client(monkeypatch)
+    response = client.get(f"/admin/wait/{DEVICE_ID}/0")
+
+    assert response.status_code == 200
+    assert "waiting 0 of 120 seconds" in response.text
+    assert f"url=/admin/wait/{DEVICE_ID}/10" in response.text
