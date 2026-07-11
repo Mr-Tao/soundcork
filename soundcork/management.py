@@ -14,10 +14,12 @@ SPOTIFY_CLIENT_SECRET are configured.
 #        out of Settings and into a per-account configuration that can
 #        be modified from the admin UI
 
+import json
 import logging
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -69,6 +71,11 @@ class ManagementDevice(BaseModel):
     playback_capability_detail: str | None = None
     source: str
     error: str | None = None
+    registry_key: str | None = None
+    home_site: str | None = None
+    current_site: str | None = None
+    registry_observed_at: str | None = None
+    registry_stale: bool = False
 
 
 class ManagementDevicesResponse(BaseModel):
@@ -83,6 +90,18 @@ class SpeakerInfo:
     ip_address: str | None = None
     account_id: str | None = None
     marge_url: str | None = None
+
+
+@dataclass
+class RegistrySpeaker:
+    key: str
+    name: str | None = None
+    device_id: str | None = None
+    home_site: str | None = None
+    current_site: str | None = None
+    current_ip: str | None = None
+    observed_at: str | None = None
+    rooted: bool = False
 
 
 def _element_text(element: ET.Element, path: str) -> str | None:
@@ -179,6 +198,48 @@ def _radio_source_summary(source_statuses: dict[str, str]) -> str:
     return ", ".join(parts)
 
 
+def _load_registry_speakers(path: str | None) -> list[RegistrySpeaker]:
+    if not path:
+        return []
+    registry_path = Path(path)
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.info("Unable to read SoundTouch registry %s: %s", registry_path, e)
+        return []
+    if payload.get("schema_version") != 1:
+        logger.info(
+            "Ignoring unsupported SoundTouch registry schema in %s", registry_path
+        )
+        return []
+    speakers = payload.get("speakers", [])
+    if not isinstance(speakers, list):
+        return []
+
+    result: list[RegistrySpeaker] = []
+    for item in speakers:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        device_id = str(item.get("device_id", "")).strip()
+        current_ip = str(item.get("current_ip", "")).strip()
+        if not key or not device_id:
+            continue
+        result.append(
+            RegistrySpeaker(
+                key=key,
+                name=str(item.get("name", "")).strip() or None,
+                device_id=device_id,
+                home_site=str(item.get("home_site", "")).strip() or None,
+                current_site=str(item.get("current_site", "")).strip() or None,
+                current_ip=current_ip or None,
+                observed_at=str(item.get("observed_at", "")).strip() or None,
+                rooted=bool(item.get("rooted", False)),
+            )
+        )
+    return result
+
+
 def _playback_capability(
     marge_server: str,
     rest_reachable: bool,
@@ -240,6 +301,46 @@ def _device_from_stored_info(
         playback_capability_detail="REST /info is not reachable.",
         source="datastore",
     )
+
+
+def _device_from_registry_speaker(speaker: RegistrySpeaker) -> ManagementDevice:
+    return ManagementDevice(
+        device_id=speaker.device_id or "",
+        name=speaker.name,
+        ip_address=speaker.current_ip,
+        in_soundcork=False,
+        rest_reachable=False,
+        marge_server="Unknown",
+        uses_this_soundcork=False,
+        playback_capability="Unknown",
+        playback_capability_detail="Registry entry is not reachable through REST /info.",
+        source="registry",
+        error=(
+            "Unable to fetch /info from registry current_ip."
+            if speaker.current_ip
+            else "Registry entry has no current_ip."
+        ),
+        registry_stale=True,
+    )
+
+
+def _merge_registry_metadata(
+    device: ManagementDevice,
+    speaker: RegistrySpeaker,
+) -> ManagementDevice:
+    device.registry_key = speaker.key
+    device.home_site = speaker.home_site
+    device.current_site = speaker.current_site
+    device.registry_observed_at = speaker.observed_at
+
+    if speaker.name and not device.name:
+        device.name = speaker.name
+    if speaker.current_ip and not device.ip_address:
+        device.ip_address = speaker.current_ip
+
+    if "registry" not in device.source:
+        device.source = f"{device.source}+registry"
+    return device
 
 
 def _merge_fresh_info(
@@ -328,10 +429,14 @@ def list_management_devices(
     config: Settings,
     account_filter: str | None = None,
     include_discovered: bool = False,
+    include_registry: bool = True,
     refresh: bool = True,
     fetch_info: Callable[[str], str] | None = None,
     fetch_sources: Callable[[str], str] | None = None,
     discover_devices: Callable[[], Iterable] | None = None,
+    load_registry_devices: (
+        Callable[[str | None], Iterable[RegistrySpeaker]] | None
+    ) = None,
 ) -> ManagementDevicesResponse:
     """Return a sanitized device inventory for management clients."""
     if fetch_info is None:
@@ -340,6 +445,8 @@ def list_management_devices(
         fetch_sources = read_runtime_sources
     if discover_devices is None:
         discover_devices = get_bose_devices
+    if load_registry_devices is None:
+        load_registry_devices = _load_registry_speakers
 
     devices: dict[str, ManagementDevice] = {}
     base_url = config.base_url
@@ -364,6 +471,76 @@ def list_management_devices(
                     )
                 elif error:
                     device.error = error
+
+    if include_registry:
+        registry_file = getattr(config, "soundtouch_registry_file", "")
+        for registry_speaker in load_registry_devices(registry_file):
+            if not registry_speaker.device_id:
+                continue
+
+            existing_device = devices.get(registry_speaker.device_id)
+            if existing_device:
+                _merge_registry_metadata(existing_device, registry_speaker)
+                if (
+                    refresh
+                    and not existing_device.rest_reachable
+                    and registry_speaker.current_ip
+                ):
+                    fresh, error = _fetch_speaker_info(
+                        registry_speaker.current_ip, fetch_info
+                    )
+                    if fresh and fresh.device_id == existing_device.device_id:
+                        if account_filter and fresh.account_id != account_filter:
+                            continue
+                        _merge_fresh_info(
+                            existing_device,
+                            fresh,
+                            base_url,
+                            source="datastore+registry",
+                        )
+                        _merge_fresh_sources(
+                            existing_device,
+                            fresh.ip_address or registry_speaker.current_ip,
+                            fetch_sources,
+                        )
+                        existing_device.registry_stale = False
+                    elif error and not existing_device.error:
+                        existing_device.error = error
+                continue
+
+            if account_filter and not refresh:
+                continue
+
+            fresh = None
+            error = None
+            if refresh and registry_speaker.current_ip:
+                fresh, error = _fetch_speaker_info(
+                    registry_speaker.current_ip, fetch_info
+                )
+                if fresh and fresh.device_id != registry_speaker.device_id:
+                    error = (
+                        f"Registry device ID {registry_speaker.device_id} differs "
+                        f"from speaker-reported device ID {fresh.device_id}"
+                    )
+                    fresh = None
+
+            if account_filter and (not fresh or fresh.account_id != account_filter):
+                continue
+
+            device = _device_from_registry_speaker(registry_speaker)
+            _merge_registry_metadata(device, registry_speaker)
+            if fresh:
+                _merge_fresh_info(device, fresh, base_url, source="registry")
+                _merge_fresh_sources(
+                    device,
+                    fresh.ip_address or registry_speaker.current_ip or "",
+                    fetch_sources,
+                )
+                device.registry_stale = False
+                device.error = None
+            elif error:
+                device.error = error
+            devices[registry_speaker.device_id] = device
 
     if include_discovered:
         for discovered_device in discover_devices():
@@ -415,6 +592,12 @@ def management_devices(
         bool,
         Query(description="Also include speakers found through local UPnP discovery."),
     ] = False,
+    include_registry: Annotated[
+        bool,
+        Query(
+            description="Also include speakers from the read-only SoundTouch registry."
+        ),
+    ] = True,
     refresh: Annotated[
         bool,
         Query(description="Refresh stored speakers through their HTTP /info endpoint."),
@@ -425,6 +608,7 @@ def management_devices(
         datastore,
         settings,
         include_discovered=include_discovered,
+        include_registry=include_registry,
         refresh=refresh,
     )
 
@@ -436,6 +620,12 @@ def management_account_devices(
         bool,
         Query(description="Also include speakers found through local UPnP discovery."),
     ] = False,
+    include_registry: Annotated[
+        bool,
+        Query(
+            description="Also include speakers from the read-only SoundTouch registry."
+        ),
+    ] = True,
     refresh: Annotated[
         bool,
         Query(description="Refresh stored speakers through their HTTP /info endpoint."),
@@ -450,6 +640,7 @@ def management_account_devices(
         settings,
         account_filter=account,
         include_discovered=include_discovered,
+        include_registry=include_registry,
         refresh=refresh,
     )
 

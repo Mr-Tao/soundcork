@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     # local directory where soundcork stores its data
     data_dir: str = ""
 
+    # optional read-only SoundTouch registry export for management/admin views
+    soundtouch_registry_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "soundtouch_registry_file",
+            "SOUNDTOUCH_REGISTRY_FILE",
+        ),
+    )
+
     # Spotify OAuth (optional — leave empty to disable)
     spotify_client_id: str = ""
     spotify_client_secret: str = ""

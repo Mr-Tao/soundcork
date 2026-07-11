@@ -5,6 +5,9 @@ Endpoints for an admin UI.
 
 import logging
 import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 from http import HTTPStatus
 from typing import Annotated
 
@@ -18,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from soundcork.constants import ACCOUNT_RE
+from soundcork.constants import ACCOUNT_RE, SPEAKER_HTTP_PORT
 from soundcork.datastore import DataStore
 from soundcork.devices import (
     add_device_by_ip,
@@ -26,6 +29,7 @@ from soundcork.devices import (
     default_sources,
     override_speaker_config,
     override_speaker_config_non_rooted,
+    read_device_info,
     reboot_speaker,
 )
 from soundcork.management import (
@@ -91,6 +95,28 @@ def _apply_management_state(
     return device
 
 
+def _combined_from_management_device(
+    management_device: ManagementDevice,
+) -> CombinedDevice:
+    account = management_device.account_id or management_device.reported_account_id
+    return CombinedDevice(
+        id=management_device.device_id,
+        ip=(
+            management_device.ip_address
+            or management_device.stored_ip_address
+            or management_device.reported_ip_address
+            or ""
+        ),
+        name=management_device.name or management_device.device_id,
+        online=False,
+        account=account,
+        in_soundcork=management_device.in_soundcork,
+        marge_server=management_device.marge_server,
+        reachable=False,
+        st_device=None,
+    )
+
+
 def _refresh_device_reachability(device: CombinedDevice) -> CombinedDevice:
     device.ssh_reachable = addr_port_is_reachable(device.ip, SSH_PORT, timeout=0.5)
     device.telnet_reachable = addr_port_is_reachable(
@@ -124,6 +150,125 @@ def _host_for_repair(
     return None
 
 
+def _device_accounts(datastore: DataStore, device_id: str) -> list[str]:
+    accounts = []
+    for account_id in datastore.list_accounts():
+        if account_id and datastore.device_exists(account_id, device_id):
+            accounts.append(account_id)
+    return accounts
+
+
+def _read_speaker_identity(hostname: str) -> tuple[str, str] | None:
+    info_xml = read_device_info(hostname)
+    if not info_xml:
+        return None
+    try:
+        info = ET.fromstring(info_xml)
+    except ET.ParseError:
+        return None
+    device_id = info.attrib.get("deviceID", "")
+    account_id = (info.findtext("margeAccountUUID") or "").strip()
+    return device_id, account_id
+
+
+def _post_speaker_account(hostname: str, account_id: str) -> bool:
+    root = ET.Element("PairDeviceWithAccount")
+    ET.SubElement(root, "accountId").text = account_id
+    ET.SubElement(root, "userAuthToken").text = "dontcare"
+    payload = ET.tostring(root, encoding="utf-8")
+    request = urllib.request.Request(
+        f"http://{hostname}:{SPEAKER_HTTP_PORT}/setMargeAccount",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/xml"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError):
+        return False
+
+
+def _wait_for_speaker_account(
+    hostname: str,
+    device_id: str,
+    account_id: str,
+    attempts: int = 5,
+    delay_seconds: float = 1.0,
+) -> bool:
+    for attempt in range(attempts):
+        identity = _read_speaker_identity(hostname)
+        if identity == (device_id, account_id):
+            return True
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return False
+
+
+def _remove_device_from_other_accounts(
+    datastore: DataStore,
+    device_id: str,
+    target_account: str,
+) -> None:
+    for account_id in _device_accounts(datastore, device_id):
+        if account_id == target_account:
+            continue
+        group = datastore.group_for_device(account_id, device_id)
+        if group:
+            datastore.delete_group(account_id, group.id)
+        datastore.remove_device(account_id, device_id)
+
+
+def _set_device_account(
+    datastore: DataStore,
+    speakers: Speakers,
+    device_id: str,
+    account_id: str,
+) -> bool:
+    if not datastore.account_exists(account_id):
+        logger.warning(
+            "cannot move %s: account %s does not exist", device_id, account_id
+        )
+        return False
+
+    management_devices = _management_devices_by_id(datastore)
+    combined_device = speakers.all_devices().get(device_id)
+    hostname = _host_for_repair(combined_device, management_devices.get(device_id))
+    if not hostname:
+        logger.warning("cannot move %s: no host known", device_id)
+        return False
+
+    if not _post_speaker_account(hostname, account_id):
+        logger.warning("cannot move %s: speaker rejected setMargeAccount", device_id)
+        return False
+
+    if not _wait_for_speaker_account(hostname, device_id, account_id):
+        logger.warning(
+            "cannot move %s: speaker did not report account %s after setMargeAccount",
+            device_id,
+            account_id,
+        )
+        return False
+
+    ssh_reachable = addr_port_is_reachable(hostname, SSH_PORT, timeout=0.5)
+    if not add_device_by_ip(hostname, ssh_reachable):
+        logger.warning(
+            "cannot move %s: failed to import device from %s", device_id, hostname
+        )
+        return False
+    if not datastore.device_exists(account_id, device_id):
+        logger.warning(
+            "cannot move %s: imported device is not stored under account %s",
+            device_id,
+            account_id,
+        )
+        return False
+
+    _remove_device_from_other_accounts(datastore, device_id, account_id)
+    speakers.clear_device(device_id)
+    return True
+
+
 def get_admin_router(datastore: DataStore, speakers: Speakers):
     from fastapi.responses import HTMLResponse
     from fastapi.templating import Jinja2Templates
@@ -141,6 +286,12 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
     async def admin(request: Request):
         combined_devices = speakers.all_devices()
         management_devices = _management_devices_by_id(datastore)
+        for device_id, management_device in management_devices.items():
+            if device_id in combined_devices:
+                continue
+            combined_devices[device_id] = _combined_from_management_device(
+                management_device
+            )
 
         unassociated_devices = []
         account_ids = datastore.list_accounts()
@@ -173,6 +324,8 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
                 found_account.devices.append(dev)
             else:
                 unassociated_devices.append(dev)
+                if dev.st_device is None:
+                    continue
                 client = SoundTouchClient(dev.st_device)
                 try:
                     # sometimes a newly loaded device doesn't have its lang set yet
@@ -310,7 +463,13 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
     async def set_account(
         request: Request, device_id: str, account_id: Annotated[str, Form()]
     ):
-        success = speakers.set_account(device_id, account_id)
+        success = _set_device_account(datastore, speakers, device_id, account_id)
+        logger.info(
+            "set account for %s to %s success=%s",
+            device_id,
+            account_id,
+            success,
+        )
         return RedirectResponse(url="/admin/", status_code=HTTPStatus.FOUND)
 
     @router.get("/admin/edit_device/{device_id}")

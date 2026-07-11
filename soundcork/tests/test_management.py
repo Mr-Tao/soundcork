@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from soundcork.management import (
     BOSE_MARGE_URL,
+    RegistrySpeaker,
     _marge_server,
     list_management_devices,
     router,
@@ -173,6 +174,84 @@ def test_list_management_devices_reports_unparseable_speaker_info():
     assert device.error == "Unable to parse /info from 192.168.11.71"
 
 
+def test_list_management_devices_includes_stale_registry_device():
+    response = list_management_devices(
+        FakeDatastore(),
+        SimpleNamespace(base_url=BASE_URL, soundtouch_registry_file="registry.json"),
+        refresh=False,
+        load_registry_devices=lambda _path: [
+            RegistrySpeaker(
+                key="remote",
+                name="remote speaker",
+                device_id="AABBCCDDEEFF",
+                home_site="ux7",
+                current_site="ux7",
+                current_ip="192.168.101.222",
+                observed_at="2026-06-10T19:22:36+0200",
+            )
+        ],
+    )
+
+    registry_device = next(
+        device for device in response.devices if device.device_id == "AABBCCDDEEFF"
+    )
+
+    assert registry_device.source == "registry"
+    assert registry_device.in_soundcork is False
+    assert registry_device.rest_reachable is False
+    assert registry_device.registry_stale is True
+    assert registry_device.registry_key == "remote"
+    assert registry_device.home_site == "ux7"
+    assert registry_device.current_site == "ux7"
+    assert registry_device.playback_capability == "Unknown"
+
+
+def test_list_management_devices_merges_registry_metadata_by_device_id():
+    response = list_management_devices(
+        FakeDatastore(),
+        SimpleNamespace(base_url=BASE_URL, soundtouch_registry_file="registry.json"),
+        fetch_info=lambda _host: "",
+        fetch_sources=lambda _host: sources_xml(),
+        load_registry_devices=lambda _path: [
+            RegistrySpeaker(
+                key="kuchyn",
+                name="kuchyn",
+                device_id=DEVICE_ID,
+                home_site="udm",
+                current_site="udm",
+                current_ip="192.168.11.71",
+                observed_at="2026-06-10T19:22:36+0200",
+            )
+        ],
+    )
+
+    assert len(response.devices) == 1
+    device = response.devices[0]
+    assert device.source == "datastore+registry"
+    assert device.registry_key == "kuchyn"
+    assert device.home_site == "udm"
+    assert device.current_site == "udm"
+    assert device.registry_observed_at == "2026-06-10T19:22:36+0200"
+
+
+def test_list_management_devices_can_exclude_registry():
+    response = list_management_devices(
+        FakeDatastore(),
+        SimpleNamespace(base_url=BASE_URL, soundtouch_registry_file="registry.json"),
+        include_registry=False,
+        refresh=False,
+        load_registry_devices=lambda _path: [
+            RegistrySpeaker(
+                key="remote",
+                device_id="AABBCCDDEEFF",
+                current_ip="192.168.101.222",
+            )
+        ],
+    )
+
+    assert [device.device_id for device in response.devices] == [DEVICE_ID]
+
+
 def test_management_devices_endpoint_uses_current_speaker_info(monkeypatch):
     monkeypatch.setattr("soundcork.management.datastore", FakeDatastore())
     monkeypatch.setattr(
@@ -196,3 +275,41 @@ def test_management_devices_endpoint_uses_current_speaker_info(monkeypatch):
     assert payload["devices"][0]["marge_server"] == "Bose"
     assert payload["devices"][0]["uses_this_soundcork"] is False
     assert payload["devices"][0]["playback_capability"] == "Needs repair"
+
+
+def test_management_devices_endpoint_can_disable_registry(monkeypatch, tmp_path):
+    registry_file = tmp_path / "site.json"
+    registry_file.write_text(
+        """{
+  "schema_version": 1,
+  "site": "udr",
+  "speakers": [
+    {
+      "key": "remote",
+      "name": "remote speaker",
+      "device_id": "AABBCCDDEEFF",
+      "current_ip": "192.168.101.222"
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("soundcork.management.datastore", FakeDatastore())
+    monkeypatch.setattr(
+        "soundcork.management.settings",
+        SimpleNamespace(base_url=BASE_URL, soundtouch_registry_file=str(registry_file)),
+    )
+    monkeypatch.setattr("soundcork.management.read_device_info", lambda _host: "")
+    monkeypatch.setattr(
+        "soundcork.management.read_runtime_sources",
+        lambda _host: sources_xml(),
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    response = TestClient(app).get("/mgmt/devices?refresh=false&include_registry=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [device["device_id"] for device in payload["devices"]] == [DEVICE_ID]
