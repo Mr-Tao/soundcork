@@ -147,7 +147,9 @@ def get_groups_router(datastore):
                     content=f"<error>{error}</error>",
                     status_code=HTTPStatus.BAD_REQUEST,
                 )
-            return BoseXMLResponse(content="<status>Groups deleted successfully</status>")
+            return BoseXMLResponse(
+                content="<status>Groups deleted successfully</status>"
+            )
         except Exception as e:
             return BoseXMLResponse(
                 content=f"<error>Unexpected error: {e}</error>", status_code=500

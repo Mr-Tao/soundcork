@@ -79,7 +79,12 @@ def test_radio_browser_token_endpoint_supports_anonymous_bmx_account(monkeypatch
 
     response = TestClient(app).post(
         "/bmx/radio-browser/v1/token",
-        json={"grant_type": "password", "username": "", "password": "", "is_anonymous": True},
+        json={
+            "grant_type": "password",
+            "username": "",
+            "password": "",
+            "is_anonymous": True,
+        },
     )
 
     assert response.status_code == 200

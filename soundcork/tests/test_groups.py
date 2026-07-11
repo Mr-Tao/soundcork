@@ -73,9 +73,7 @@ def _group_payload(
     """
 
 
-def test_group_datastore_roundtrip_uses_group_id_from_filename(
-    tmp_path, monkeypatch
-):
+def test_group_datastore_roundtrip_uses_group_id_from_filename(tmp_path, monkeypatch):
     account = "12345"
     left_id = "AABBCCDDEEFF"
     right_id = "112233445566"
@@ -113,9 +111,7 @@ def test_get_device_group_xml_returns_empty_group_for_ungrouped_st10(
     assert list(group_xml) == []
 
 
-def test_marge_group_routes_match_stockholm_and_speaker_shapes(
-    tmp_path, monkeypatch
-):
+def test_marge_group_routes_match_stockholm_and_speaker_shapes(tmp_path, monkeypatch):
     account = "12345"
     left_id = "AABBCCDDEEFF"
     right_id = "112233445566"
@@ -166,9 +162,7 @@ def test_marge_group_routes_match_stockholm_and_speaker_shapes(
     assert deleted.status_code == 200
     assert datastore.list_groups(account) == []
 
-    ungrouped = client.get(
-        f"/marge/streaming/account/{account}/device/{left_id}/group"
-    )
+    ungrouped = client.get(f"/marge/streaming/account/{account}/device/{left_id}/group")
     assert ungrouped.status_code == 200
     assert ET.fromstring(ungrouped.text).tag == "group"
     assert list(ET.fromstring(ungrouped.text)) == []
