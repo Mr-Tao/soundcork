@@ -263,6 +263,13 @@ def add_device_by_ip(hostname: str, reachable: bool = True) -> bool:
             if reachable:
                 sources = read_sources(hostname)
             else:
+                fallback_sources = default_sources()
+                recents = _filter_items_for_sources(
+                    recents, "recent", "contentItem", fallback_sources
+                )
+                presets = _filter_items_for_sources(
+                    presets, "preset", "ContentItem", fallback_sources
+                )
                 sources = default_sources_string()
             logger.info(f"sources={sources}")
             # FIXME get the account email address for this
@@ -278,6 +285,42 @@ def add_device_by_ip(hostname: str, reachable: bool = True) -> bool:
         )  # type: ignore
         return True
     return False
+
+
+def _filter_items_for_sources(
+    items_xml: str,
+    item_tag: str,
+    content_item_tag: str,
+    sources: list[ConfiguredSource],
+) -> str:
+    """Remove imported items that cannot be represented by available sources."""
+    root = ET.fromstring(items_xml)
+    source_keys = {
+        (source.source_key_type, source.source_key_account) for source in sources
+    }
+    removed = 0
+    for item in list(root.findall(item_tag)):
+        content_item = item.find(content_item_tag)
+        if content_item is None:
+            continue
+        source_key = (
+            content_item.attrib.get("source", ""),
+            content_item.attrib.get("sourceAccount", ""),
+        )
+        if source_key not in source_keys:
+            root.remove(item)
+            removed += 1
+
+    if not removed:
+        return items_xml
+
+    logger.info(
+        "removed %d %s entries without an available configured source",
+        removed,
+        item_tag,
+    )
+    ET.indent(root, space="    ", level=0)
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8").decode()
 
 
 def add_account(
