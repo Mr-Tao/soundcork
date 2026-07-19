@@ -6,15 +6,24 @@ togeter to act as a single stereo device. If you don't have two ST10s then
 you will likely never use Groups.
 """
 
+import json
+import logging
+import re
 import xml.etree.ElementTree as ET
 from http import HTTPStatus
+from ipaddress import AddressValueError, IPv4Address
+from pathlib import Path as FilePath
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Query, Request, Response
 
+from soundcork.config import Settings
 from soundcork.constants import ACCOUNT_RE, DEVICE_RE, GROUP_RE
 from soundcork.marge import add_group, get_device_group_xml, modify_group
-from soundcork.model import BoseXMLResponse
+from soundcork.model import BoseXMLResponse, Group
+
+logger = logging.getLogger(__name__)
+settings = Settings()
 
 router = APIRouter(tags=["marge"])
 
@@ -28,11 +37,125 @@ def _bose_xml_str(xml: ET.Element) -> str:
     return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(xml, encoding="unicode")}'
 
 
+def _required_string(item: dict, field: str) -> str | None:
+    value = item.get(field)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _registry_group(item: object, account: str) -> Group | None:
+    if not isinstance(item, dict):
+        return None
+
+    account_id = _required_string(item, "account_id")
+    group_id = _required_string(item, "group_id")
+    name = _required_string(item, "name")
+    master_id = _required_string(item, "master_device_id")
+    roles = item.get("roles")
+    if (
+        account_id != account
+        or not group_id
+        or not re.fullmatch(GROUP_RE, group_id)
+        or not name
+        or not master_id
+        or not isinstance(roles, dict)
+        or set(roles) != {"left", "right"}
+    ):
+        return None
+
+    left = roles.get("left")
+    right = roles.get("right")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return None
+
+    left_id = _required_string(left, "device_id")
+    left_ip = _required_string(left, "ip_address")
+    right_id = _required_string(right, "device_id")
+    right_ip = _required_string(right, "ip_address")
+    if (
+        not left_id
+        or not re.fullmatch(DEVICE_RE, left_id)
+        or not left_ip
+        or not right_id
+        or not re.fullmatch(DEVICE_RE, right_id)
+        or not right_ip
+        or left_id.upper() == right_id.upper()
+        or master_id.upper() not in {left_id.upper(), right_id.upper()}
+    ):
+        return None
+    try:
+        IPv4Address(left_ip)
+        IPv4Address(right_ip)
+    except AddressValueError:
+        return None
+
+    return Group(
+        id=group_id,
+        name=name,
+        master_id=master_id,
+        left_id=left_id,
+        left_ip=left_ip,
+        right_id=right_id,
+        right_ip=right_ip,
+    )
+
+
+def _load_registry_groups(registry_file: str, account: str) -> list[Group]:
+    if not registry_file:
+        return []
+
+    registry_path = FilePath(registry_file)
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        logger.info("Unable to read SoundTouch registry %s: %s", registry_path, error)
+        return []
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return []
+
+    stereo_groups = payload.get("stereo_groups", [])
+    if not isinstance(stereo_groups, list):
+        return []
+
+    groups = []
+    for item in stereo_groups:
+        group = _registry_group(item, account)
+        if group:
+            groups.append(group)
+    return groups
+
+
+def _group_device_ids(group: Group) -> set[str]:
+    return {
+        device_id.upper() for device_id in (group.left_id, group.right_id) if device_id
+    }
+
+
+def _registry_groups_for_read(
+    account: str, registry_file: str, local_groups: list[Group]
+) -> list[Group]:
+    covered_device_ids = set().union(
+        *(_group_device_ids(group) for group in local_groups)
+    )
+    registry_groups = []
+    for group in _load_registry_groups(registry_file, account):
+        device_ids = _group_device_ids(group)
+        if device_ids & covered_device_ids:
+            continue
+        registry_groups.append(group)
+        covered_device_ids.update(device_ids)
+    return registry_groups
+
+
 # ----------------------------------------------------------------------
 # Factory: creates router with access to datastore (Dependency Injection)
 # ----------------------------------------------------------------------
-def get_groups_router(datastore):
+def get_groups_router(datastore, registry_file: str | None = None):
     marge = APIRouter(tags=["marge"])
+    if registry_file is None:
+        registry_file = settings.soundtouch_registry_file
 
     @marge.get(
         "/marge/streaming/account/{account}/groups",
@@ -45,7 +168,12 @@ def get_groups_router(datastore):
         """marge group endpoint to list all groups for an account"""
 
         groups_elem = ET.Element("groups")
-        for group in datastore.list_groups(account):
+        local_groups = datastore.list_groups(account)
+        registry_groups = _registry_groups_for_read(
+            account, registry_file, local_groups
+        )
+        # Registry groups are response-only; mutations still use DataStore.
+        for group in local_groups + registry_groups:
             groups_elem.append(datastore.group_to_xml(group))
 
         return _bose_xml_str(groups_elem)
@@ -66,7 +194,23 @@ def get_groups_router(datastore):
     ):
         """marge group endpoint to query group per device"""
 
-        result = get_device_group_xml(datastore, account, device)
+        local_groups = datastore.list_groups(account)
+        registry_groups = _registry_groups_for_read(
+            account, registry_file, local_groups
+        )
+        matching_group = next(
+            (
+                group
+                for group in local_groups + registry_groups
+                if device.upper() in _group_device_ids(group)
+            ),
+            None,
+        )
+        result = (
+            datastore.group_to_xml(matching_group)
+            if matching_group
+            else get_device_group_xml(datastore, account, device)
+        )
 
         return _bose_xml_str(result)
 
