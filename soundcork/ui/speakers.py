@@ -1,5 +1,7 @@
 import errno
+import ipaddress
 import logging
+import re
 import xml.etree.ElementTree as ET
 
 from bosesoundtouchapi.models import NowPlayingStatus, Volume  # type: ignore
@@ -11,12 +13,17 @@ from bosesoundtouchapi.soundtouchclient import (  # type: ignore
 )
 from bosesoundtouchapi.soundtouchdiscovery import SoundTouchDiscovery  # type: ignore
 from pydantic import BaseModel, Field
+from urllib3 import PoolManager, Retry, Timeout
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
 from soundcork.model import ContentItem
 
 logger = logging.getLogger(__name__)
+
+SPEAKER_CONNECT_TIMEOUT = 1.0
+SPEAKER_READ_TIMEOUT = 2.0
+SOUNDTOUCH_DEVICE_ID_PATTERN = re.compile(r"^[0-9A-Fa-f]{12}$")
 
 
 class CombinedDevice(BaseModel):
@@ -170,6 +177,120 @@ class Speakers:
 
         return combined_devices
 
+    @staticmethod
+    def _http_manager() -> PoolManager:
+        """Create a request-local HTTP manager with fully bounded I/O."""
+        return PoolManager(
+            headers={"User-Agent": "SoundCork/1.0"},
+            timeout=Timeout(
+                connect=SPEAKER_CONNECT_TIMEOUT,
+                read=SPEAKER_READ_TIMEOUT,
+            ),
+            retries=Retry(total=0, connect=0, read=0, redirect=0),
+            num_pools=2,
+            maxsize=2,
+            block=True,
+        )
+
+    def _device_for_control(
+        self, device_id: str, *, retry_generation: bool = True
+    ) -> tuple[CombinedDevice | None, PoolManager]:
+        """Resolve a live device, using its configured IP as a verified fallback."""
+        manager = self._http_manager()
+        if not SOUNDTOUCH_DEVICE_ID_PATTERN.fullmatch(device_id):
+            logger.warning("Refusing invalid SoundTouch device ID %s", device_id)
+            return None, manager
+
+        combined_device = self.all_devices().get(device_id)
+        if (
+            not combined_device
+            or combined_device.st_device
+            or not combined_device.in_soundcork
+            or not combined_device.ip
+        ):
+            return combined_device, manager
+
+        try:
+            configured_ip = ipaddress.ip_address(combined_device.ip)
+        except ValueError:
+            logger.warning(
+                "Refusing invalid configured address %s for device %s",
+                combined_device.ip,
+                device_id,
+            )
+            return None, manager
+
+        if (
+            not isinstance(configured_ip, ipaddress.IPv4Address)
+            or configured_ip.is_loopback
+            or configured_ip.is_unspecified
+            or configured_ip.is_multicast
+        ):
+            logger.warning(
+                "Refusing unsafe configured address %s for device %s",
+                combined_device.ip,
+                device_id,
+            )
+            return None, manager
+
+        expected_account = combined_device.account
+        expected_ip = str(configured_ip)
+
+        try:
+            st_device = SoundTouchDevice(
+                host=expected_ip,
+                connectTimeout=int(SPEAKER_CONNECT_TIMEOUT),
+                proxyManager=manager,
+            )
+        except Exception as exc:
+            logger.info(
+                "Configured device %s at %s is not reachable through REST: %s",
+                device_id,
+                expected_ip,
+                exc,
+            )
+            return None, manager
+
+        if st_device.DeviceId.upper() != device_id.upper():
+            logger.warning(
+                "Configured address %s for device %s belongs to device %s",
+                expected_ip,
+                device_id,
+                st_device.DeviceId,
+            )
+            return None, manager
+
+        current_device = self.all_devices().get(device_id)
+        if (
+            not current_device
+            or current_device.account != expected_account
+            or current_device.ip != expected_ip
+        ):
+            logger.info(
+                "Configured location changed while resolving device %s; discarding %s",
+                device_id,
+                expected_ip,
+            )
+            if retry_generation:
+                return self._device_for_control(device_id, retry_generation=False)
+            return None, manager
+
+        current_device.st_device = st_device
+        current_device.online = True
+        current_device.rest_reachable = True
+        return current_device, manager
+
+    def _client_for_control(
+        self, device_id: str
+    ) -> tuple[CombinedDevice | None, SoundTouchClient | None]:
+        combined_device, manager = self._device_for_control(device_id)
+        if not combined_device or not combined_device.st_device:
+            return combined_device, None
+        return combined_device, SoundTouchClient(
+            combined_device.st_device,
+            manager=manager,
+        )
+
     def _content_item_to_soundtouchclient(self, ci: ContentItem) -> BCContentItem:
         """Maps our ContentItem to a SoundTouchClient ContentItem."""
         return BCContentItem(
@@ -191,8 +312,8 @@ class Speakers:
         Returns:
             True if successful, False otherwise
         """
-        cd = self.all_devices().get(device_id)
-        if not cd or not cd.st_device:
+        cd, client = self._client_for_control(device_id)
+        if not cd or not client:
             logger.error(f"Device {device_id} not found or not online")
             return False
 
@@ -213,10 +334,15 @@ class Speakers:
             f"Attempting playback of content item {content_item_id} on device {device_id}"
         )
         bose_content_item = self._content_item_to_soundtouchclient(content_item)
-        client = SoundTouchClient(cd.st_device)
-        client.PlayContentItem(bose_content_item, delay=0)
-
-        return True
+        try:
+            client.PlayContentItem(bose_content_item, delay=0)
+            return True
+        except Exception:
+            logger.exception(
+                "Playback request for device %s failed; its outcome may be uncertain",
+                device_id,
+            )
+            return False
 
     def stop_playback(self, device_id: str) -> bool:
         """Stop playback on a specific device.
@@ -227,18 +353,21 @@ class Speakers:
         Returns:
             True if successful, False otherwise
         """
-        cd = self.all_devices().get(device_id)
-        if not cd or not cd.st_device:
+        cd, client = self._client_for_control(device_id)
+        if not cd or not client:
             logger.error(f"Device {device_id} not found or not online")
             return False
 
-        client = SoundTouchClient(cd.st_device)
         try:
             client.MediaStop()
             logger.info(f"Stopped playback on device {device_id}")
             return True
         except Exception as e:
-            logger.error(f"Error stopping playback on device {device_id}: {e}")
+            logger.error(
+                "Stop request for device %s failed; its outcome may be uncertain: %s",
+                device_id,
+                e,
+            )
             return False
 
     def get_volume(self, device_id: str, refresh: bool = False) -> Volume | None:
@@ -253,12 +382,11 @@ class Speakers:
         Returns:
             Volume object if successful, None otherwise
         """
-        cd = self.all_devices().get(device_id)
-        if not cd or not cd.st_device:
+        cd, client = self._client_for_control(device_id)
+        if not cd or not client:
             logger.error(f"Device {device_id} not found or not online")
-            return False
+            return None
 
-        client = SoundTouchClient(cd.st_device)
         volume = client.GetVolume(refresh=refresh)
         logger.info(f"Volume: {volume.Actual, volume.Target, volume.IsMuted}")
 
@@ -275,21 +403,24 @@ class Speakers:
             True if successful, False otherwise
         """
         logger.info(f"setting name {device_id} to {name}")
-        combined_device = self.all_devices().get(device_id)
-        if combined_device:
+        combined_device, st_client = self._client_for_control(device_id)
+        if combined_device and st_client:
             logger.info(f"found device {combined_device.id}")
-            speaker = combined_device.st_device
-            st_client = SoundTouchClient(speaker)
             logger.info("setting name")
             root = ET.Element("name")
             root.text = name
             payload = ET.tostring(root, "utf-8").decode()
             logger.info(f"sending set name payload {payload}")
 
-            st_client.Put(SoundTouchNodes.name, payload)
-            # st_client.SetName(name)
-            logger.info("set name was successful")
-            return True
+            try:
+                st_client.Put(SoundTouchNodes.name, payload)
+                logger.info("set name was successful")
+                return True
+            except Exception:
+                logger.exception(
+                    "Rename request for device %s failed; its outcome may be uncertain",
+                    device_id,
+                )
         return False
 
     async def set_language(self, device_id: str, language: str) -> bool:
@@ -302,12 +433,16 @@ class Speakers:
         Returns:
             True if successful, False otherwise
         """
-        combined_device = self.all_devices().get(device_id)
-        if combined_device:
-            speaker = combined_device.st_device
-            st_client = SoundTouchClient(speaker)
-            st_client.SetLanguage(language)
-            return True
+        combined_device, st_client = self._client_for_control(device_id)
+        if combined_device and st_client:
+            try:
+                st_client.SetLanguage(language)
+                return True
+            except Exception:
+                logger.exception(
+                    "Language request for device %s failed; its outcome may be uncertain",
+                    device_id,
+                )
         return False
 
     def set_account(self, device_id: str, account_id: str) -> bool:
@@ -320,19 +455,22 @@ class Speakers:
         Returns:
             True if successful, False otherwise
         """
-        combined_device = self.all_devices().get(device_id)
+        combined_device, st_client = self._client_for_control(device_id)
 
-        if combined_device:
+        if combined_device and st_client:
             root = ET.Element("PairDeviceWithAccount")
             ET.SubElement(root, "accountId").text = account_id
             ET.SubElement(root, "userAuthToken").text = "dontcare"
             payload = ET.tostring(root, "utf-8").decode()
             logger.info(f"sending set account payload {payload}")
-            speaker = combined_device.st_device
-            st_client = SoundTouchClient(speaker)
-
-            st_client.Put(SoundTouchNodes.setMargeAccount, payload)
-            return True
+            try:
+                st_client.Put(SoundTouchNodes.setMargeAccount, payload)
+                return True
+            except Exception:
+                logger.exception(
+                    "Account request for device %s failed; its outcome may be uncertain",
+                    device_id,
+                )
         return False
 
     def get_now_playing_status(self, device_id: str) -> NowPlayingStatus | None:
@@ -344,10 +482,26 @@ class Speakers:
         Returns:
             A BoseSoundTouchApi NowPlayingStatus object.
         """
-        cd = self.all_devices().get(device_id)
-        if not cd or not cd.st_device:
+        cd, client = self._client_for_control(device_id)
+        if not cd or not client:
             logger.error(f"Device {device_id} not found or not online")
             return None
 
-        client = SoundTouchClient(cd.st_device)
         return client.GetNowPlayingStatus()
+
+    def get_now_playing_and_volume(
+        self, device_id: str
+    ) -> tuple[NowPlayingStatus | None, Volume | None]:
+        """Read current playback and volume through one verified, bounded client."""
+        cd, client = self._client_for_control(device_id)
+        if not cd or not client:
+            logger.error(f"Device {device_id} not found or not online")
+            return None, None
+
+        now_playing = client.GetNowPlayingStatus()
+        try:
+            volume = client.GetVolume(refresh=True)
+        except Exception as exc:
+            logger.warning("Error getting volume for %s: %s", device_id, exc)
+            volume = None
+        return now_playing, volume

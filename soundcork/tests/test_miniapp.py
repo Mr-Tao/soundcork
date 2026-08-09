@@ -84,16 +84,19 @@ class FakeSpeakers:
         self,
         play_result: bool = True,
         now_playing_status=None,
+        online: bool = True,
     ) -> None:
         self.play_result = play_result
         self.now_playing_status = now_playing_status
+        self.online = online
         self.play_calls: list[tuple[str, str]] = []
+        self.now_playing_calls: list[str] = []
 
     def all_devices(self):
         return {
             DEVICE_ID: SimpleNamespace(
                 account=ACCOUNT_ID,
-                online=True,
+                online=self.online,
                 in_soundcork=True,
                 marge_server="Soundcork",
             )
@@ -105,11 +108,18 @@ class FakeSpeakers:
 
     def get_now_playing_status(self, device_id: str):
         assert device_id == DEVICE_ID
+        self.now_playing_calls.append(device_id)
         return self.now_playing_status
 
     def get_volume(self, device_id: str):
         assert device_id == DEVICE_ID
         return SimpleNamespace(Actual=23, Target=23, IsMuted=False)
+
+    def get_now_playing_and_volume(self, device_id: str):
+        return (
+            self.get_now_playing_status(device_id),
+            self.get_volume(device_id),
+        )
 
     def stop_playback(self, device_id: str) -> bool:
         assert device_id == DEVICE_ID
@@ -181,6 +191,45 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
     assert "Účet ložnice" in response.text
     assert "ložnice" in response.text
     assert "Rádio Proglas" in response.text
+
+
+def test_dashboard_resolves_selected_configured_device(monkeypatch):
+    now_playing = SimpleNamespace(
+        StationName="Rádio Dechovka",
+        ContentItem=SimpleNamespace(Name="Rádio Dechovka"),
+        ContainerArtUrl="",
+        PlayStatus="PLAY_STATE",
+    )
+    speakers = FakeSpeakers(
+        now_playing_status=now_playing,
+        online=False,
+    )
+    client, _speakers = make_client(monkeypatch, speakers=speakers)
+
+    response = client.get(
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 200
+    assert speakers.now_playing_calls == [DEVICE_ID]
+    assert "Now Playing on ložnice" in response.text
+    assert "Rádio Dechovka" in response.text
+    assert 'class="device-card online"' in response.text
+
+
+def test_dashboard_does_not_probe_unselected_configured_device(monkeypatch):
+    speakers = FakeSpeakers(online=False)
+    client, _speakers = make_client(monkeypatch, speakers=speakers)
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 200
+    assert speakers.now_playing_calls == []
+    assert 'class="device-card offline"' in response.text
 
 
 def test_dashboard_proxies_tunein_preset_art(monkeypatch):

@@ -50,6 +50,7 @@ class NowPlaying:
     volume_actual: int
     volume_target: int
     is_muted: bool
+    reachable: bool = False
 
     def is_volume_changing(self) -> bool:
         """Target and Actual values will only be different while volume is changing."""
@@ -397,27 +398,31 @@ def get_miniapp_router(
 
             for device_id in my_combined_devices.keys():
                 try:
+                    cd = my_combined_devices[device_id]
                     if stopped and device_id == selected_device_id:
                         np = NowPlaying("", "", "", 0, 0, False)
-                    else:
+                    elif cd.online or device_id == selected_device_id:
                         np = await _get_now_playing(device_id)
-                        if (
-                            show_started_state
-                            and device_id == selected_device_id
-                            and selected_preset
-                        ):
-                            np = NowPlaying(
-                                selected_preset.name,
-                                selected_preset.container_art or "",
-                                "PLAY_STATE",
-                                np.volume_actual,
-                                np.volume_target,
-                                np.is_muted,
-                            )
+                    else:
+                        np = NowPlaying("", "", "", 0, 0, False)
+                    if (
+                        show_started_state
+                        and not stopped
+                        and device_id == selected_device_id
+                        and selected_preset
+                    ):
+                        np = NowPlaying(
+                            selected_preset.name,
+                            selected_preset.container_art or "",
+                            "PLAY_STATE",
+                            np.volume_actual,
+                            np.volume_target,
+                            np.is_muted,
+                            np.reachable,
+                        )
                     online = "offline"
-                    cd = my_combined_devices[device_id]
                     device_info = datastore.get_device_info(account_id, device_id)
-                    if cd.online and cd.in_soundcork:
+                    if (cd.online or np.reachable) and cd.in_soundcork:
                         online = "online"
                     devices.append(
                         {
@@ -477,22 +482,19 @@ def get_miniapp_router(
         """Get now_playing info for a device"""
         loop = asyncio.get_event_loop()
         try:
-            np = await asyncio.wait_for(
+            np, volume = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: speakers.get_now_playing_status(device_id=device_id),
+                    lambda: speakers.get_now_playing_and_volume(device_id=device_id),
                 ),
                 timeout=NOW_PLAYING_TIMEOUT,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout getting now playing status for {device_id}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
-
-        try:
-            volume = speakers.get_volume(device_id)
         except Exception as e:
-            logger.warning(f"Error getting volume for {device_id}: {e}")
-            volume = None
+            logger.warning(f"Error getting now playing status for {device_id}: {e}")
+            return NowPlaying("[Unknown]", "", "", 0, 0, False)
 
         if np:
             return NowPlaying(
@@ -502,6 +504,7 @@ def get_miniapp_router(
                 volume.Actual if volume else 0,
                 volume.Target if volume else 0,
                 volume.IsMuted if volume else False,
+                True,
             )
         else:
             return NowPlaying(
@@ -511,6 +514,7 @@ def get_miniapp_router(
                 volume.Actual if volume else 0,
                 volume.Target if volume else 0,
                 volume.IsMuted if volume else False,
+                volume is not None,
             )
 
     @router.post("/miniapp/select-content-item")
