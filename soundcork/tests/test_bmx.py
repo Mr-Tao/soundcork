@@ -93,6 +93,38 @@ def test_navigate_uses_top_level_ashx_audio_items(monkeypatch):
     assert item.links.bmx_preset.container_art == image_url
 
 
+def test_navigate_keeps_top_level_ashx_text_items(monkeypatch):
+    tunein_uri = (
+        "http://opml.radiotime.com/Browse.ashx"
+        "?id=c424724&filter=l115&render=json"
+    )
+    requested_urls = []
+
+    def fake_urlopen(url):
+        requested_urls.append(url)
+        return FakeTuneInResponse(
+            {
+                "head": {"title": "Music"},
+                "body": [
+                    {
+                        "type": "text",
+                        "text": "No stations or shows available",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("soundcork.bmx.urllib.request.urlopen", fake_urlopen)
+
+    response = tunein_navigate_v1(encode_uri(tunein_uri))
+    item = response.bmx_sections[0].items[0]
+
+    assert requested_urls == [tunein_uri]
+    assert response.bmx_sections[0].name == "Music"
+    assert item.name == "No stations or shows available"
+    assert item.links is None
+
+
 def test_search_url_encodes_spaces_and_more_link_uses_encoded_query(monkeypatch):
     requested_urls = []
 

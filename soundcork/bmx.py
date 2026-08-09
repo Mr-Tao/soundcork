@@ -368,6 +368,8 @@ def tunein_sections_ashx(
                 items.append(tunein_navigate_link(item))
             elif type == "audio":
                 items.append(tunein_navigate_playitem(item))
+            elif type == "text":
+                items.append(tunein_navigate_textitem(item))
             else:
                 logger.info(f"top-level item has type {type}: {item}")
         else:
@@ -396,6 +398,8 @@ def tunein_sections_ashx(
                     section_items.append(tunein_navigate_playitem(nav_item))
                 elif type == "link":
                     section_items.append(tunein_navigate_link(nav_item))
+                elif type == "text":
+                    section_items.append(tunein_navigate_textitem(nav_item))
                 else:
                     logger.info(f"unknown type {type} for {nav_item}")
 
@@ -472,6 +476,14 @@ def tunein_navigate_link(item: dict) -> BmxNavItem:
                 "href": f"/v1/navigate/{enc_url}",
             }
         },
+        image_url=item.get("image", ""),
+        name=item.get("text", ""),
+        subtitle=item.get("subtext", ""),
+    )
+
+
+def tunein_navigate_textitem(item: dict) -> BmxNavItem:
+    return BmxNavItem(
         image_url=item.get("image", ""),
         name=item.get("text", ""),
         subtitle=item.get("subtext", ""),
