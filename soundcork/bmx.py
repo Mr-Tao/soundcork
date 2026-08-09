@@ -491,6 +491,7 @@ def tunein_sections_jsonapi(
     # by default just show all of our items as a simple list
     layout = "list"
     sections = []
+    section_items = []
     items = content_json["Items"]
 
     for idx, item in enumerate(items):
@@ -505,7 +506,28 @@ def tunein_sections_jsonapi(
             if item.get("ContainerType", "") != "NotPlayableStations":
                 sections.append(tunein_search_section(item, idx, ""))
         else:
-            logger.info(f"top-level nav not a container: {item.get('Type', '')}")
+            nav_item = tunein_search_navitem(item)
+            if nav_item:
+                section_items.append(nav_item)
+            else:
+                logger.info(f"top-level nav not a container: {item.get('Type', '')}")
+
+    if section_items:
+        sections.append(
+            BmxNavSection(
+                links={
+                    "self": {
+                        "href": (
+                            "/v1/navigate/"
+                            f"{base64.urlsafe_b64encode(tunein_uri.encode()).decode()}"
+                        )
+                    }
+                },
+                items=section_items,
+                layout=layout,
+                name=content_json.get("Header", {}).get("Title", ""),
+            )
+        )
 
     if subsection is not None:
         subsection_part = f"sub/{subsection}/"
@@ -624,32 +646,9 @@ def tunein_search_section(
     section_items = []
 
     for child in item.get("Children", []):
-        child_type = child.get("Type", "")
-        if child_type == "Station":
-            section_items.append(tunein_search_playitem(child))
-        elif child_type == "Topic":
-            section_items.append(tunein_search_topic(child))
-        elif child_type == "Program":
-            section_items.append(tunein_search_profile(child, "Program"))
-        elif child_type == "Artist":
-            section_items.append(tunein_search_profile(child, "Artist"))
-        elif child_type == "Category":
-            category_href = child.get("Actions", {}).get("Browse", {}).get("Url", "")
-            category_href_encoded = base64.urlsafe_b64encode(
-                category_href.encode()
-            ).decode()
-            section_items.append(
-                BmxNavItem(
-                    links={
-                        "bmx_navigate": {
-                            "href": f"/v1/navigate/{category_href_encoded}"
-                        },
-                    },
-                    image_url=child.get("Image", ""),
-                    name=child.get("Title", ""),
-                    subtitle=child.get("Subtitle", ""),
-                )
-            )
+        nav_item = tunein_search_navitem(child)
+        if nav_item:
+            section_items.append(nav_item)
         else:
             logger.info(f"child is type {child.get('Type', '')}")
 
@@ -659,6 +658,34 @@ def tunein_search_section(
         layout=layout,
         name=item.get("Title", ""),
     )
+
+
+def tunein_search_navitem(item: dict) -> BmxNavItem | None:
+    item_type = item.get("Type", "")
+    if item_type == "Station":
+        return tunein_search_playitem(item)
+    if item_type == "Topic":
+        return tunein_search_topic(item)
+    if item_type == "Program":
+        return tunein_search_profile(item, "Program")
+    if item_type == "Artist":
+        return tunein_search_profile(item, "Artist")
+    if item_type == "Category":
+        category_href = item.get("Actions", {}).get("Browse", {}).get("Url", "")
+        category_href_encoded = base64.urlsafe_b64encode(
+            category_href.encode()
+        ).decode()
+        return BmxNavItem(
+            links={
+                "bmx_navigate": {
+                    "href": f"/v1/navigate/{category_href_encoded}"
+                },
+            },
+            image_url=item.get("Image", ""),
+            name=item.get("Title", ""),
+            subtitle=item.get("Subtitle", ""),
+        )
+    return None
 
 
 def tunein_search_playitem(item: dict) -> BmxNavItem:

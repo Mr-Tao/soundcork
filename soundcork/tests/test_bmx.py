@@ -139,3 +139,41 @@ def test_search_url_encodes_spaces_and_more_link_uses_encoded_query(monkeypatch)
     assert response.bmx_sections[0].items[0].links.bmx_playback.href == (
         "/v1/playback/station/s12345"
     )
+
+
+def test_navigate_uses_top_level_jsonapi_station_items(monkeypatch):
+    tunein_uri = (
+        "https://api.radiotime.com/profiles?"
+        "fulltextSearch=true&filter=s&query=rozhlas&version=1.3"
+    )
+    image_url = "http://cdn-profiles.tunein.com/s25461/images/logoq.png"
+    requested_urls = []
+
+    def fake_urlopen(url):
+        requested_urls.append(url)
+        return FakeTuneInResponse(
+            {
+                "Header": {"Title": "Stations"},
+                "Items": [
+                    {
+                        "Type": "Station",
+                        "GuideId": "s25461",
+                        "Title": "Cesky rozhlas Vltava",
+                        "Subtitle": "Umění slyšet",
+                        "Image": image_url,
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("soundcork.bmx.urllib.request.urlopen", fake_urlopen)
+
+    response = tunein_navigate_v1(encode_uri(tunein_uri))
+    section = response.bmx_sections[0]
+    item = section.items[0]
+
+    assert requested_urls == [tunein_uri]
+    assert section.name == "Stations"
+    assert item.name == "Cesky rozhlas Vltava"
+    assert item.image_url == image_url
+    assert item.links.bmx_playback.href == "/v1/playback/station/s25461"
