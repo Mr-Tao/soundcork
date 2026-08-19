@@ -367,15 +367,11 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
                 success = override_speaker_config(hostname)
                 reboot = reboot_speaker(hostname)
                 logger.info(f"reboot {hostname} result {reboot}")
-                if success:
-                    speakers.clear_device(device_id)
             elif telnet_reachable:
                 success = await override_speaker_config_non_rooted(hostname)
                 logger.info(
                     f"override speaker config on {hostname} success = {success}"
                 )
-                if success:
-                    speakers.clear_device(device_id)
             else:
                 logger.warning(
                     "cannot switch %s to Soundcork: no SSH or CLIServer access",

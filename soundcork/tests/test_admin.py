@@ -220,7 +220,9 @@ def test_admin_shows_registry_only_devices(monkeypatch):
     assert "Registry entry is stale." in response.text
 
 
-def test_switch_to_soundcork_uses_telnet_when_ssh_is_unavailable(monkeypatch):
+def test_switch_to_soundcork_keeps_telnet_device_available_for_restart_poll(
+    monkeypatch,
+):
     called_hosts: list[str] = []
 
     async def fake_non_rooted(host: str) -> bool:
@@ -252,7 +254,43 @@ def test_switch_to_soundcork_uses_telnet_when_ssh_is_unavailable(monkeypatch):
     assert response.status_code == 302
     assert response.headers["location"] == f"/admin/wait/{DEVICE_ID}/0"
     assert called_hosts == [DEVICE_IP]
-    assert speakers.cleared_devices == [DEVICE_ID]
+    assert speakers.cleared_devices == []
+
+
+def test_switch_to_soundcork_keeps_ssh_device_available_for_restart_poll(
+    monkeypatch,
+):
+    copied_hosts: list[str] = []
+    rebooted_hosts: list[str] = []
+
+    monkeypatch.setattr(
+        "soundcork.admin.list_management_devices",
+        lambda *_args, **_kwargs: management_devices_response(),
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.addr_port_is_reachable",
+        lambda _host, port, timeout=2: port == 22,
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.override_speaker_config",
+        lambda host: copied_hosts.append(host) or True,
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.reboot_speaker",
+        lambda host: rebooted_hosts.append(host) or True,
+    )
+    monkeypatch.setattr("soundcork.admin.time.sleep", lambda _seconds: None)
+
+    client, speakers, _datastore = make_client(monkeypatch)
+    response = client.post(
+        f"/admin/switchToSoundcork/{DEVICE_ID}", follow_redirects=False
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"/admin/wait/{DEVICE_ID}/0"
+    assert copied_hosts == [DEVICE_IP]
+    assert rebooted_hosts == [DEVICE_IP]
+    assert speakers.cleared_devices == []
 
 
 def test_admin_shows_move_account_for_configured_device(monkeypatch):
