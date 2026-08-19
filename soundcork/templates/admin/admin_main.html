@@ -10,6 +10,7 @@
                 <li><strong>REST /info</strong> means the speaker answered its HTTP API on port 8090. This is enough to inspect live state, but not enough to rewrite Bose URLs.</li>
                 <li><strong>SSH</strong> means root shell access is available on port 22. Soundcork can copy the override XML and reboot the speaker.</li>
                 <li><strong>Telnet CLIServer</strong> means the non-rooted SoundTouch command port 17000 is reachable. Soundcork can ask the speaker to update its Bose URLs and reboot.</li>
+                <li><strong>Import Account from Speaker</strong> copies the speaker's current account, presets, recents, and sources into Soundcork. It does not modify or restart the speaker.</li>
                 <li><strong>Switch to Soundcork</strong> sets the Bose service URLs to this Soundcork instance. Use it when Live Marge is not Soundcork and either SSH or Telnet CLIServer is available.</li>
             </ul>
         </details>
@@ -51,7 +52,7 @@
                         {% if not device.in_soundcork %}
                           {% if not account.in_soundcork and device.rest_reachable %}
                             <form action="/admin/addDevice/{{device.id}}" method="POST">
-                              <input type="submit" value="Configure Account">
+                              <input type="submit" value="Import Account from Speaker">
                             </form>
                           {% elif account.in_soundcork %}
                             <form action="/admin/addDevice/{{device.id}}" method="POST">

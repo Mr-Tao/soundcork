@@ -83,6 +83,7 @@ class EmptySpeakers(FakeSpeakers):
 def management_devices_response(
     marge_server: str = "Bose",
     account_id: str = ACCOUNT_ID,
+    in_soundcork: bool = True,
 ) -> ManagementDevicesResponse:
     return ManagementDevicesResponse(
         devices=[
@@ -95,7 +96,7 @@ def management_devices_response(
                 ip_address=DEVICE_IP,
                 stored_ip_address=DEVICE_IP,
                 reported_ip_address=DEVICE_IP,
-                in_soundcork=True,
+                in_soundcork=in_soundcork,
                 rest_reachable=True,
                 marge_url="https://streaming.bose.com",
                 marge_server=marge_server,
@@ -153,6 +154,37 @@ def test_admin_shows_live_marge_and_telnet_repair_action(monkeypatch):
     assert "Swtich" not in response.text
     assert list_calls[0]["include_discovered"] is True
     assert callable(list_calls[0]["discover_devices"])
+
+
+def test_admin_labels_account_import_without_implying_speaker_changes(monkeypatch):
+    monkeypatch.setattr(
+        "soundcork.admin.list_management_devices",
+        lambda *_args, **_kwargs: management_devices_response(
+            account_id=ALT_ACCOUNT_ID,
+            in_soundcork=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.addr_port_is_reachable",
+        lambda _host, _port, timeout=2: False,
+    )
+
+    datastore = FakeDatastore(
+        accounts=[ACCOUNT_ID],
+        device_accounts={DEVICE_ID: []},
+    )
+    client, _speakers, _datastore = make_client(
+        monkeypatch,
+        EmptySpeakers(),
+        datastore,
+    )
+    response = client.get("/admin/")
+
+    assert response.status_code == 200
+    assert f"/admin/addDevice/{DEVICE_ID}" in response.text
+    assert "Import Account from Speaker" in response.text
+    assert "It does not modify or restart the speaker." in response.text
+    assert "Configure Account" not in response.text
 
 
 def test_combined_from_management_device_supports_registry_only_devices():
