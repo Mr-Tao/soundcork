@@ -27,6 +27,7 @@ from soundcork.devices import (
     add_device_by_ip,
     addr_port_is_reachable,
     default_sources,
+    get_bose_devices,
     override_speaker_config,
     override_speaker_config_non_rooted,
     read_device_info,
@@ -46,16 +47,28 @@ logger = logging.getLogger(__name__)
 
 SSH_PORT = 22
 CLISERVER_PORT = 17000
+ADMIN_DISCOVERY_TIMEOUT_SECONDS = 1
 
 
-def _management_devices_by_id(datastore: DataStore) -> dict[str, ManagementDevice]:
+def _management_devices_by_id(
+    datastore: DataStore,
+    *,
+    include_discovered: bool = False,
+) -> dict[str, ManagementDevice]:
+    discover_devices = (
+        (lambda: get_bose_devices(timeout=ADMIN_DISCOVERY_TIMEOUT_SECONDS))
+        if include_discovered
+        else None
+    )
+
     return {
         device.device_id: device
         for device in list_management_devices(
             datastore,
             management_settings,
-            include_discovered=False,
+            include_discovered=include_discovered,
             refresh=True,
+            discover_devices=discover_devices,
         ).devices
     }
 
@@ -231,7 +244,7 @@ def _set_device_account(
         )
         return False
 
-    management_devices = _management_devices_by_id(datastore)
+    management_devices = _management_devices_by_id(datastore, include_discovered=True)
     combined_device = speakers.all_devices().get(device_id)
     hostname = _host_for_repair(combined_device, management_devices.get(device_id))
     if not hostname:
@@ -285,7 +298,9 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
     @router.get("/admin/", response_class=HTMLResponse)
     async def admin(request: Request):
         combined_devices = speakers.all_devices()
-        management_devices = _management_devices_by_id(datastore)
+        management_devices = _management_devices_by_id(
+            datastore, include_discovered=True
+        )
         for device_id, management_device in management_devices.items():
             if device_id in combined_devices:
                 continue
@@ -354,7 +369,9 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
     @router.post("/admin/switchToSoundcork/{device_id}")
     async def switch_device(device_id: str):
         logger.info(f"switch {device_id} to soundcork")
-        management_devices = _management_devices_by_id(datastore)
+        management_devices = _management_devices_by_id(
+            datastore, include_discovered=True
+        )
         management_device = management_devices.get(device_id)
         combined_device = speakers.all_devices().get(device_id)
         hostname = _host_for_repair(combined_device, management_device)
@@ -398,21 +415,27 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
             time.sleep(40)
             elapsed = 40
 
+        management_devices = _management_devices_by_id(
+            datastore, include_discovered=True
+        )
         combined_device = speakers.all_devices().get(device_id)
-        if combined_device:
-            st_device = combined_device.st_device
-            if st_device:
-                try:
-                    # a freshly rebooted device might not have its lang available yet.
-                    # in this case give it a little longer to load
-                    client = SoundTouchClient(st_device)
-                    lang = client.GetLanguage()
-                    # if it's loadable then return to the admin page
-                    return RedirectResponse(
-                        url=f"/admin/", status_code=HTTPStatus.FOUND
-                    )
-                except:
-                    pass
+        st_device = combined_device.st_device if combined_device else None
+        if st_device:
+            try:
+                # a freshly rebooted device might not have its lang available yet.
+                # in this case give it a little longer to load
+                client = SoundTouchClient(st_device)
+                lang = client.GetLanguage()
+                # if it's loadable then return to the admin page
+                return RedirectResponse(url=f"/admin/", status_code=HTTPStatus.FOUND)
+            except:
+                pass
+        else:
+            management_device = management_devices.get(device_id)
+            hostname = _host_for_repair(None, management_device)
+            identity = _read_speaker_identity(hostname) if hostname else None
+            if identity and identity[0] == device_id:
+                return RedirectResponse(url=f"/admin/", status_code=HTTPStatus.FOUND)
 
         return templates.TemplateResponse(
             request=request,
@@ -423,13 +446,15 @@ def get_admin_router(datastore: DataStore, speakers: Speakers):
     @router.post("/admin/addDevice/{device_id}")
     async def add_device_to_soundcork(device_id: str):
         logger.debug(f"add device {device_id} to soundcork")
+        management_devices = _management_devices_by_id(
+            datastore, include_discovered=True
+        )
         combined_device = speakers.all_devices().get(device_id)
-        if combined_device:
-            st_device = combined_device.st_device
-            if st_device:
-                hostname = st_device.Host
-                success = add_device_by_ip(hostname, combined_device.reachable)
-                logger.debug(f"added account from {hostname} success = {success}")
+        hostname = _host_for_repair(combined_device, management_devices.get(device_id))
+        if hostname:
+            ssh_reachable = addr_port_is_reachable(hostname, SSH_PORT, timeout=0.5)
+            success = add_device_by_ip(hostname, ssh_reachable)
+            logger.debug(f"added account from {hostname} success = {success}")
 
         return RedirectResponse(url=f"/admin/", status_code=HTTPStatus.FOUND)
 

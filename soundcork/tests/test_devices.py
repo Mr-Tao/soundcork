@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 from soundcork.devices import (
     _filter_items_for_sources,
     default_sources,
+    get_bose_devices,
     read_file_from_speaker_http,
 )
 
@@ -24,6 +25,18 @@ def test_read_file_from_speaker_http_passes_timeout(monkeypatch):
 
     assert result == "<info />"
     assert calls == [("http://192.0.2.10:8090/info", 7)]
+
+
+def test_get_bose_devices_passes_discovery_timeout(monkeypatch):
+    timeouts = []
+
+    monkeypatch.setattr(
+        "soundcork.devices.upnpclient.discover",
+        lambda timeout: timeouts.append(timeout) or [],
+    )
+
+    assert get_bose_devices(timeout=1) == []
+    assert timeouts == [1]
 
 
 def test_filter_items_for_sources_removes_unavailable_recent_source():

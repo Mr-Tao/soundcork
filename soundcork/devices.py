@@ -188,9 +188,9 @@ def read_file_from_speaker_http(host: str, path: str, timeout: int = 2) -> str:
         return ""
 
 
-def get_bose_devices() -> list[upnpclient.upnp.Device]:
+def get_bose_devices(timeout: int = 5) -> list[upnpclient.upnp.Device]:
     """Return a list of all Bose SoundTouch UPnP devices on the network"""
-    devices = upnpclient.discover()
+    devices = upnpclient.discover(timeout=timeout)
     bose_devices = [d for d in devices if "Bose SoundTouch" in d.model_description]
     logger.info("Discovering upnp devices on the network")
     logger.info(

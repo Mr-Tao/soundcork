@@ -151,7 +151,8 @@ def test_admin_shows_live_marge_and_telnet_repair_action(monkeypatch):
     assert f"/admin/switchToSoundcork/{DEVICE_ID}" in response.text
     assert "B0D5CC0391DB" not in response.text
     assert "Swtich" not in response.text
-    assert list_calls[0]["include_discovered"] is False
+    assert list_calls[0]["include_discovered"] is True
+    assert callable(list_calls[0]["discover_devices"])
 
 
 def test_combined_from_management_device_supports_registry_only_devices():
@@ -246,7 +247,7 @@ def test_switch_to_soundcork_keeps_telnet_device_available_for_restart_poll(
     )
     monkeypatch.setattr("soundcork.admin.time.sleep", lambda _seconds: None)
 
-    client, speakers, _datastore = make_client(monkeypatch)
+    client, speakers, _datastore = make_client(monkeypatch, EmptySpeakers())
     response = client.post(
         f"/admin/switchToSoundcork/{DEVICE_ID}", follow_redirects=False
     )
@@ -293,6 +294,47 @@ def test_switch_to_soundcork_keeps_ssh_device_available_for_restart_poll(
     assert speakers.cleared_devices == []
 
 
+def test_add_device_uses_discovered_management_host_when_not_cached(monkeypatch):
+    imported: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(
+        "soundcork.admin.list_management_devices",
+        lambda *_args, **_kwargs: management_devices_response(),
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.addr_port_is_reachable",
+        lambda _host, port, timeout=2: port == 22,
+    )
+    monkeypatch.setattr(
+        "soundcork.admin.add_device_by_ip",
+        lambda host, reachable: imported.append((host, reachable)) or True,
+    )
+
+    client, _speakers, _datastore = make_client(monkeypatch, EmptySpeakers())
+    response = client.post(f"/admin/addDevice/{DEVICE_ID}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/admin/"
+    assert imported == [(DEVICE_IP, True)]
+
+
+def test_wait_finds_discovered_management_device_when_not_cached(monkeypatch):
+    monkeypatch.setattr(
+        "soundcork.admin.list_management_devices",
+        lambda *_args, **_kwargs: management_devices_response(),
+    )
+    monkeypatch.setattr(
+        "soundcork.admin._read_speaker_identity",
+        lambda host: (DEVICE_ID, ACCOUNT_ID) if host == DEVICE_IP else None,
+    )
+
+    client, _speakers, _datastore = make_client(monkeypatch, EmptySpeakers())
+    response = client.get(f"/admin/wait/{DEVICE_ID}/40", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/admin/"
+
+
 def test_admin_shows_move_account_for_configured_device(monkeypatch):
     monkeypatch.setattr(
         "soundcork.admin.list_management_devices",
@@ -335,7 +377,7 @@ def test_set_device_account_imports_new_account_then_removes_old(monkeypatch):
 
     monkeypatch.setattr(
         "soundcork.admin._management_devices_by_id",
-        lambda _datastore: {
+        lambda _datastore, **_kwargs: {
             DEVICE_ID: management_devices_response(
                 marge_server="Soundcork",
                 account_id=ALT_ACCOUNT_ID,
@@ -382,7 +424,7 @@ def test_set_device_account_does_not_cleanup_if_live_account_does_not_change(
 
     monkeypatch.setattr(
         "soundcork.admin._management_devices_by_id",
-        lambda _datastore: {
+        lambda _datastore, **_kwargs: {
             DEVICE_ID: management_devices_response(
                 marge_server="Soundcork",
                 account_id=ALT_ACCOUNT_ID,
