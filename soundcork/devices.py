@@ -27,6 +27,7 @@ from soundcork.config import Settings
 from soundcork.constants import (
     SPEAKER_DEVICE_INFO_PATH,
     SPEAKER_HTTP_PORT,
+    SPEAKER_NOTIFICATION_PATH,
     SPEAKER_OVERRIDE_SDK_LOCATION,
     SPEAKER_PRESETS_PATH,
     SPEAKER_RECENTS_PATH,
@@ -186,6 +187,62 @@ def read_file_from_speaker_http(host: str, path: str, timeout: int = 2) -> str:
     except Exception:
         logger.info(f"no result for {url}")
         return ""
+
+
+def notify_sources_updated(hostname: str, device_id: str, timeout: int = 2) -> bool:
+    """Tell one speaker to refresh configured sources from Marge."""
+    updates = ET.Element("updates", {"deviceID": device_id})
+    ET.SubElement(updates, "sourcesUpdated")
+    request = urllib.request.Request(
+        f"http://{hostname}:{SPEAKER_HTTP_PORT}{SPEAKER_NOTIFICATION_PATH}",
+        data=ET.tostring(updates, encoding="utf-8", xml_declaration=True),
+        method="POST",
+        headers={"Content-Type": "application/xml"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            status = ET.fromstring(body)
+            return (
+                response.status == 200
+                and status.tag == "status"
+                and (status.text or "").strip() == SPEAKER_NOTIFICATION_PATH
+            )
+    except (OSError, ET.ParseError) as exc:
+        logger.info("Unable to notify %s about source updates: %s", device_id, exc)
+        return False
+
+
+def notify_account_sources_updated(
+    store: DataStore, account: str, base_url: str
+) -> None:
+    """Notify stored speakers that currently use this Soundcork instance."""
+    expected_marge_url = f"{base_url.rstrip('/')}/marge"
+    for device_id in store.list_devices(account):
+        if not device_id:
+            continue
+        try:
+            device = store.get_device_info(account, device_id)
+        except (OSError, ET.ParseError, RuntimeError) as exc:
+            logger.info("Unable to load device %s for source sync: %s", device_id, exc)
+            continue
+        if not device.ip_address:
+            continue
+        try:
+            live_info = ET.fromstring(read_device_info(device.ip_address))
+        except ET.ParseError:
+            logger.info("Unable to verify device %s before source sync", device_id)
+            continue
+        live_device_id = live_info.attrib.get("deviceID", "")
+        live_marge_url = (live_info.findtext("margeURL") or "").strip().rstrip("/")
+        if live_device_id != device_id or live_marge_url != expected_marge_url:
+            logger.info(
+                "Skipping source sync for device %s using another Marge server",
+                device_id,
+            )
+            continue
+        if not notify_sources_updated(device.ip_address, device_id):
+            logger.info("Source update notification failed for device %s", device_id)
 
 
 def get_bose_devices(timeout: int = 5) -> list[upnpclient.upnp.Device]:

@@ -7,7 +7,15 @@ from datetime import datetime
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Request,
+    Response,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +33,7 @@ from soundcork.devices import (
     add_device,
     get_bose_devices,
     hostname_for_device,
+    notify_account_sources_updated,
     read_device_info,
     read_recents,
 )
@@ -683,9 +692,14 @@ def get_account_sources(account: Annotated[str, Path(pattern=ACCOUNT_RE)]) -> st
 async def post_account_source(
     account: Annotated[str, Path(pattern=ACCOUNT_RE)],
     request: Request,
+    background_tasks: BackgroundTasks,
 ):
     xml = await request.body()
     xml_resp = add_source_to_account(datastore, account, xml.decode())
+    # Codex: refresh account peers that currently use this Soundcork instance.
+    background_tasks.add_task(
+        notify_account_sources_updated, datastore, account, settings.base_url
+    )
 
     return bose_xml_str(xml_resp)
 
@@ -695,8 +709,12 @@ async def delete_account_source(
     account: Annotated[str, Path(pattern=ACCOUNT_RE)],
     source_id: str,
     response: Response,
+    background_tasks: BackgroundTasks,
 ):
     remove_source_from_account(datastore, account, source_id)
+    background_tasks.add_task(
+        notify_account_sources_updated, datastore, account, settings.base_url
+    )
     response.headers["method_name"] = "removeSource"
     response.headers["location"] = (
         f"{settings.base_url}/marge/account/{account}/source/{source_id}"
