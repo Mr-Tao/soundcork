@@ -585,12 +585,16 @@ async def delete_account_device(
 
 
 @app.get("/marge/streaming/device/{device_id}/streaming_token", tags=["marge"])
-def streaming_token(device_id: str, response: Response):
-    response.headers["Authorization"] = "c3dvcmRmaXNoCg=="
+def streaming_token(device_id: str):
+    # Codex: Match the bearer-token response consumed by SoundTouch firmware.
+    authorization = "Bearer c3dvcmRmaXNoCg=="
+    token = ET.Element("bearertoken", {"value": authorization})
+    response = BoseXMLResponse(content=bose_xml_str(token))
+    response.headers["Authorization"] = authorization
     etag = int(datetime.now().timestamp() * 1000)
     response.headers["ETag"] = str(etag)
 
-    return
+    return response
 
 
 @app.post("/marge/streaming/account/login", tags=["marge"])
