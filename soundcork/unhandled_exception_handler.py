@@ -16,6 +16,8 @@ from fastapi import Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response as StarletteResponse
 
+from soundcork.marge_paths import is_marge_protocol_path
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -129,8 +131,8 @@ class NotFoundHandler:
             if exc.status_code == 404:
                 path = request.url.path
 
-                # Case 1: /marge...
-                if path.startswith("/marge"):
+                # Case 1: canonical or legacy Marge protocol routes
+                if is_marge_protocol_path(path):
                     log_dir = self._log_dir_marge
                 else:
                     log_dir = self._log_dir_other

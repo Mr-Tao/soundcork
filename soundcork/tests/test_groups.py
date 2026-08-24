@@ -12,6 +12,14 @@ from soundcork.groups import get_groups_router
 from soundcork.marge import get_device_group_xml
 
 
+def _groups_app(datastore: DataStore, registry_file: str | None = None) -> FastAPI:
+    app = FastAPI()
+    router = get_groups_router(datastore, registry_file)
+    app.include_router(router)
+    app.include_router(router, prefix="/marge", include_in_schema=False)
+    return app
+
+
 def _datastore(tmp_path: Path, monkeypatch) -> DataStore:
     monkeypatch.setattr("soundcork.datastore.settings.data_dir", str(tmp_path))
     return DataStore()
@@ -158,9 +166,7 @@ def test_marge_group_routes_match_stockholm_and_speaker_shapes(tmp_path, monkeyp
     datastore = _datastore(tmp_path, monkeypatch)
     _write_st10(datastore, account, left_id, "192.0.2.10", "Left")
     _write_st10(datastore, account, right_id, "192.0.2.11", "Right")
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore))
-    client = TestClient(app)
+    client = TestClient(_groups_app(datastore))
 
     created = client.post(
         f"/marge/streaming/account/{account}/group/",
@@ -208,15 +214,34 @@ def test_marge_group_routes_match_stockholm_and_speaker_shapes(tmp_path, monkeyp
     assert list(ET.fromstring(ungrouped.text)) == []
 
 
+@pytest.mark.parametrize("prefix", ("", "/marge"))
+def test_group_location_uses_the_requested_route_family(prefix, tmp_path, monkeypatch):
+    account = "12345"
+    datastore = _datastore(tmp_path, monkeypatch)
+    _write_st10(datastore, account, "AABBCCDDEEFF", "192.0.2.10", "Left")
+    _write_st10(datastore, account, "112233445566", "192.0.2.11", "Right")
+    client = TestClient(_groups_app(datastore))
+
+    response = client.post(
+        f"{prefix}/streaming/account/{account}/group/",
+        content=_group_payload(),
+        headers={"Content-Type": "application/vnd.bose.streaming-v1.2+xml"},
+    )
+
+    assert response.status_code == 201
+    group_id = ET.fromstring(response.text).get("id")
+    assert response.headers["location"] == (
+        f"http://testserver{prefix}/streaming/account/{account}/group/{group_id}"
+    )
+
+
 def test_account_groups_includes_remote_registry_overlay(tmp_path, monkeypatch):
     account = "12345"
     registry_file = tmp_path / "registry.json"
     _write_registry(registry_file, [_registry_group(account=account)])
     registry_contents = registry_file.read_text(encoding="utf-8")
     datastore = _datastore(tmp_path / "data", monkeypatch)
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore, str(registry_file)))
-    client = TestClient(app)
+    client = TestClient(_groups_app(datastore, str(registry_file)))
 
     response = client.get(f"/marge/streaming/account/{account}/groups")
 
@@ -256,9 +281,7 @@ def test_local_group_wins_over_registry_group_with_changed_id(tmp_path, monkeypa
     monkeypatch.setattr(datastore, "_generate_group_id", lambda _account: "1234567")
     local_group = datastore.group_from_xml("", ET.fromstring(_group_payload()))
     datastore.add_group(account, local_group)
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore, str(registry_file)))
-    client = TestClient(app)
+    client = TestClient(_groups_app(datastore, str(registry_file)))
 
     response = client.get(f"/marge/streaming/account/{account}/groups")
     device_response = client.get(
@@ -274,8 +297,7 @@ def test_registry_groups_are_filtered_by_account(tmp_path, monkeypatch):
     registry_file = tmp_path / "registry.json"
     _write_registry(registry_file, [_registry_group(account="67890")])
     datastore = _datastore(tmp_path / "data", monkeypatch)
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore, str(registry_file)))
+    app = _groups_app(datastore, str(registry_file))
 
     response = TestClient(app).get("/marge/streaming/account/12345/groups")
 
@@ -289,8 +311,7 @@ def test_device_group_includes_remote_registry_overlay(tmp_path, monkeypatch):
     registry_file = tmp_path / "registry.json"
     _write_registry(registry_file, [_registry_group(account=account)])
     datastore = _datastore(tmp_path / "data", monkeypatch)
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore, str(registry_file)))
+    app = _groups_app(datastore, str(registry_file))
 
     response = TestClient(app).get(
         f"/marge/streaming/account/{account}/device/{device_id}/group"
@@ -327,8 +348,7 @@ def test_missing_or_malformed_registry_is_an_empty_overlay(
     if registry_contents is not None:
         registry_file.write_text(registry_contents, encoding="utf-8")
     datastore = _datastore(tmp_path / "data", monkeypatch)
-    app = FastAPI()
-    app.include_router(get_groups_router(datastore, str(registry_file)))
+    app = _groups_app(datastore, str(registry_file))
 
     response = TestClient(app).get("/marge/streaming/account/12345/groups")
 

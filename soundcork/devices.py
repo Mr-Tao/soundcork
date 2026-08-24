@@ -35,6 +35,7 @@ from soundcork.constants import (
     SPEAKER_SOURCES_PATH,
 )
 from soundcork.datastore import DataStore
+from soundcork.marge_paths import is_soundcork_marge_url
 from soundcork.model import ConfiguredSource
 
 logging.basicConfig(
@@ -217,7 +218,6 @@ def notify_account_sources_updated(
     store: DataStore, account: str, base_url: str
 ) -> None:
     """Notify stored speakers that currently use this Soundcork instance."""
-    expected_marge_url = f"{base_url.rstrip('/')}/marge"
     for device_id in store.list_devices(account):
         if not device_id:
             continue
@@ -234,8 +234,10 @@ def notify_account_sources_updated(
             logger.info("Unable to verify device %s before source sync", device_id)
             continue
         live_device_id = live_info.attrib.get("deviceID", "")
-        live_marge_url = (live_info.findtext("margeURL") or "").strip().rstrip("/")
-        if live_device_id != device_id or live_marge_url != expected_marge_url:
+        live_marge_url = (live_info.findtext("margeURL") or "").strip()
+        if live_device_id != device_id or not is_soundcork_marge_url(
+            live_marge_url, base_url
+        ):
             logger.info(
                 "Skipping source sync for device %s using another Marge server",
                 device_id,

@@ -8,6 +8,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import (
+    APIRouter,
     BackgroundTasks,
     Depends,
     FastAPI,
@@ -58,6 +59,7 @@ from soundcork.marge import (
     update_device_poweron,
     update_preset,
 )
+from soundcork.marge_paths import is_streaming_protocol_path, legacy_marge_prefix
 from soundcork.miniapp import get_miniapp_router
 from soundcork.model import (
     BmxNavResponse,
@@ -144,6 +146,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(management_router)
+marge_router = APIRouter()
 
 
 startup_timestamp = int(datetime.now().timestamp() * 1000)
@@ -157,7 +160,11 @@ async def register_spotify_primer_speakers(request: Request, call_next):
         return response
 
     path = request.url.path
-    if "/marge/" not in path or "/account/" not in path or "/device/" not in path:
+    if (
+        not is_streaming_protocol_path(path)
+        or "/account/" not in path
+        or "/device/" not in path
+    ):
         return response
 
     parts = path.split("/")
@@ -193,8 +200,8 @@ def read_root():
         return RedirectResponse(url="/admin", status_code=303)
 
 
-@app.post(
-    "/marge/streaming/support/power_on",
+@marge_router.post(
+    "/streaming/support/power_on",
     tags=["marge"],
 )
 async def power_on(request: Request, response: Response) -> Response:
@@ -216,13 +223,13 @@ async def power_on(request: Request, response: Response) -> Response:
         return response
 
 
-@app.get("/marge/streaming/resources/api_versions.xml", tags=["marge"])
+@marge_router.get("/streaming/resources/api_versions.xml", tags=["marge"])
 def api_versions():
     return RedirectResponse("/static/resources/api-versions.xml")
 
 
-@app.post(
-    "/marge/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
+@marge_router.post(
+    "/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
     tags=["oauth"],
     status_code=HTTPStatus.OK,
 )
@@ -264,7 +271,7 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
     return JSONResponse(content=token_dict)
 
 
-@app.get("/marge/streaming/sourceproviders", tags=["marge"])
+@marge_router.get("/streaming/sourceproviders", tags=["marge"])
 def streamingsourceproviders():
     return_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
@@ -316,8 +323,8 @@ def etag_for_swupdate(request: Request) -> str:
     return "1663726921993"
 
 
-@app.get(
-    "/marge/streaming/account/{account}/device/{device}/presets",
+@marge_router.get(
+    "/streaming/account/{account}/device/{device}/presets",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -338,8 +345,8 @@ def account_presets(
     return bose_xml_str(xml)
 
 
-@app.get(
-    "/marge/streaming/account/{account}/presets/all",
+@marge_router.get(
+    "/streaming/account/{account}/presets/all",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -362,8 +369,8 @@ def account_presets_all(
     return bose_xml_str(xml)
 
 
-@app.put(
-    "/marge/streaming/account/{account}/device/{device}/preset/{preset_number}",
+@marge_router.put(
+    "/streaming/account/{account}/device/{device}/preset/{preset_number}",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -386,8 +393,8 @@ async def put_account_preset(
     return bose_xml_str(xml_resp)
 
 
-@app.delete(
-    "/marge/streaming/account/{account}/device/{device}/preset/{preset_number}",
+@marge_router.delete(
+    "/streaming/account/{account}/device/{device}/preset/{preset_number}",
     response_class=BoseXMLResponse,
     tags=["marge"],
 )
@@ -400,8 +407,8 @@ def delete_account_preset(
     return None
 
 
-@app.get(
-    "/marge/streaming/account/{account}/device/{device}/recents",
+@marge_router.get(
+    "/streaming/account/{account}/device/{device}/recents",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -421,8 +428,8 @@ def account_recents(
     return bose_xml_str(xml)
 
 
-@app.get(
-    "/marge/streaming/account/{account}/provider_settings",
+@marge_router.get(
+    "/streaming/account/{account}/provider_settings",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -440,13 +447,13 @@ def account_provider_settings(account: Annotated[str, Path(pattern=ACCOUNT_RE)])
     return bose_xml_str(xml)
 
 
-@app.post(
-    "/marge/streaming/music/musicprovider/{provider_id}/is_eligible",
+@marge_router.post(
+    "/streaming/music/musicprovider/{provider_id}/is_eligible",
     response_class=BoseXMLResponse,
     tags=["marge"],
 )
-@app.post(
-    "/marge/streaming/music/musicprovider/{provider_id}/trial/is_eligible",
+@marge_router.post(
+    "/streaming/music/musicprovider/{provider_id}/trial/is_eligible",
     response_class=BoseXMLResponse,
     tags=["marge"],
 )
@@ -456,8 +463,8 @@ def account_provider_eligibility(provider_id: str):
     return bose_xml_str(xml)
 
 
-@app.get(
-    "/marge/streaming/software/update/account/{account}",
+@marge_router.get(
+    "/streaming/software/update/account/{account}",
     response_class=BoseXMLResponse,
     dependencies=[Depends(Etag(etag_gen=etag_for_swupdate, weak=False))],
     tags=["marge"],
@@ -467,8 +474,8 @@ def software_update(account: Annotated[str, Path(pattern=ACCOUNT_RE)]):
     return bose_xml_str(xml)
 
 
-@app.get(
-    "/marge/streaming/account/{account}/full",
+@marge_router.get(
+    "/streaming/account/{account}/full",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -486,8 +493,8 @@ def account_full(account: Annotated[str, Path(pattern=ACCOUNT_RE)]) -> str:
     return bose_xml_str(xml)
 
 
-@app.get(
-    "/marge/streaming/account/{account}/devices",
+@marge_router.get(
+    "/streaming/account/{account}/devices",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -505,8 +512,8 @@ def account_devices(account: Annotated[str, Path(pattern=ACCOUNT_RE)]) -> str:
     return bose_xml_str(xml)
 
 
-@app.post(
-    "/marge/streaming/account/{account}/device/{device}/recent",
+@marge_router.post(
+    "/streaming/account/{account}/device/{device}/recent",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[Depends(Etag(etag_gen=etag_for_recents, weak=False))],
@@ -521,8 +528,8 @@ async def post_account_recent(
     return bose_xml_str(xml_resp)
 
 
-@app.post(
-    "/marge/streaming/account/{account}/device/",
+@marge_router.post(
+    "/streaming/account/{account}/device/",
     response_class=BoseXMLResponse,
     tags=["marge"],
     status_code=HTTPStatus.CREATED,
@@ -549,8 +556,8 @@ async def post_account_device(
     return bose_xml_str(xml_resp)
 
 
-@app.put(
-    "/marge/streaming/account/{account}/device/{device_id}",
+@marge_router.put(
+    "/streaming/account/{account}/device/{device_id}",
     response_class=BoseXMLResponse,
     tags=["marge"],
     status_code=HTTPStatus.OK,
@@ -577,23 +584,25 @@ async def put_account_device(
     return bose_xml_str(xml_resp)
 
 
-@app.delete("/marge/streaming/account/{account}/device/{device}", tags=["marge"])
+@marge_router.delete("/streaming/account/{account}/device/{device}", tags=["marge"])
 async def delete_account_device(
     account: Annotated[str, Path(pattern=ACCOUNT_RE)],
     device: Annotated[str, Path(pattern=DEVICE_RE)],
+    request: Request,
     response: Response,
 ):
     xml_resp = remove_device_from_account(datastore, account, device)
     response.headers["method_name"] = "removeDevice"
+    route_prefix = legacy_marge_prefix(request.url.path) or "/streaming"
     response.headers["location"] = (
-        f"{settings.base_url}/marge/account/{account}/device/{device}"
+        f"{settings.base_url}{route_prefix}/account/{account}/device/{device}"
     )
     response.body = b""
     response.status_code = HTTPStatus.OK
     return response
 
 
-@app.get("/marge/streaming/device/{device_id}/streaming_token", tags=["marge"])
+@marge_router.get("/streaming/device/{device_id}/streaming_token", tags=["marge"])
 def streaming_token(device_id: str):
     # Codex: Match the bearer-token response consumed by SoundTouch firmware.
     authorization = "Bearer c3dvcmRmaXNoCg=="
@@ -606,7 +615,7 @@ def streaming_token(device_id: str):
     return response
 
 
-@app.post("/marge/streaming/account/login", tags=["marge"])
+@marge_router.post("/streaming/account/login", tags=["marge"])
 async def post_account_login(
     request: Request,
 ):
@@ -654,8 +663,8 @@ async def post_account_login(
     return response
 
 
-@app.get(
-    "/marge/streaming/account/{account}/sources",
+@marge_router.get(
+    "/streaming/account/{account}/sources",
     response_class=BoseXMLResponse,
     tags=["marge"],
     dependencies=[
@@ -672,8 +681,8 @@ def get_account_sources(account: Annotated[str, Path(pattern=ACCOUNT_RE)]) -> st
     return bose_xml_str(xml)
 
 
-@app.post(
-    "/marge/streaming/account/{account}/source",
+@marge_router.post(
+    "/streaming/account/{account}/source",
     response_class=BoseXMLResponse,
     tags=["marge"],
     status_code=HTTPStatus.CREATED,
@@ -704,10 +713,11 @@ async def post_account_source(
     return bose_xml_str(xml_resp)
 
 
-@app.delete("/marge/streaming/account/{account}/source/{source_id}", tags=["marge"])
+@marge_router.delete("/streaming/account/{account}/source/{source_id}", tags=["marge"])
 async def delete_account_source(
     account: Annotated[str, Path(pattern=ACCOUNT_RE)],
     source_id: str,
+    request: Request,
     response: Response,
     background_tasks: BackgroundTasks,
 ):
@@ -716,8 +726,9 @@ async def delete_account_source(
         notify_account_sources_updated, datastore, account, settings.base_url
     )
     response.headers["method_name"] = "removeSource"
+    route_prefix = legacy_marge_prefix(request.url.path) or "/streaming"
     response.headers["location"] = (
-        f"{settings.base_url}/marge/account/{account}/source/{source_id}"
+        f"{settings.base_url}{route_prefix}/account/{account}/source/{source_id}"
     )
     response.body = b""
     response.status_code = HTTPStatus.OK
@@ -1011,8 +1022,10 @@ def add_device_to_datastore(device_id: str):
 
 
 #####################################################################################
-# include all routines for groups
-app.include_router(get_groups_router(datastore))
+# include all Marge routines at the canonical root and legacy /marge prefix
+marge_router.include_router(get_groups_router(datastore))
+app.include_router(marge_router)
+app.include_router(marge_router, prefix="/marge", include_in_schema=False)
 app.include_router(get_groups_service_router(datastore))
 
 

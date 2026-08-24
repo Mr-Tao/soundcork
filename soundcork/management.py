@@ -34,6 +34,7 @@ from soundcork.devices import (
     read_device_info,
     read_runtime_sources,
 )
+from soundcork.marge_paths import is_soundcork_marge_url
 from soundcork.model import DeviceInfo
 from soundcork.spotify_service import SpotifyService
 
@@ -159,7 +160,7 @@ def _marge_server(marge_url: str | None, base_url: str) -> str:
         return "Unknown"
     if marge_url == BOSE_MARGE_URL:
         return "Bose"
-    if marge_url.rstrip("/") == f"{base_url.rstrip('/')}/marge":
+    if is_soundcork_marge_url(marge_url, base_url):
         return "Soundcork"
     return "Other"
 

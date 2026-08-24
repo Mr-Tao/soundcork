@@ -17,6 +17,7 @@ from urllib3 import PoolManager, Retry, Timeout
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
+from soundcork.marge_paths import is_soundcork_marge_url
 from soundcork.model import ContentItem
 
 logger = logging.getLogger(__name__)
@@ -170,7 +171,9 @@ class Speakers:
                 sc_device = new_cd
             if st_device.StreamingUrl == "https://streaming.bose.com":
                 sc_device.marge_server = "Bose"
-            elif st_device.StreamingUrl == f"{self._settings.base_url}/marge":
+            elif is_soundcork_marge_url(
+                st_device.StreamingUrl, self._settings.base_url
+            ):
                 sc_device.marge_server = "Soundcork"
             else:
                 sc_device.marge_server = f"Unknown ({st_device.StreamingUrl})"

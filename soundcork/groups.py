@@ -20,6 +20,7 @@ from fastapi import APIRouter, Path, Query, Request, Response
 from soundcork.config import Settings
 from soundcork.constants import ACCOUNT_RE, DEVICE_RE, GROUP_RE
 from soundcork.marge import add_group, get_device_group_xml, modify_group
+from soundcork.marge_paths import legacy_marge_prefix
 from soundcork.model import BoseXMLResponse, Group
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ def get_groups_router(datastore, registry_file: str | None = None):
         registry_file = settings.soundtouch_registry_file
 
     @marge.get(
-        "/marge/streaming/account/{account}/groups",
+        "/streaming/account/{account}/groups",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
@@ -179,12 +180,12 @@ def get_groups_router(datastore, registry_file: str | None = None):
         return _bose_xml_str(groups_elem)
 
     @marge.get(
-        "/marge/streaming/account/{account}/device/{device}/group/",
+        "/streaming/account/{account}/device/{device}/group/",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
     @marge.get(
-        "/marge/streaming/account/{account}/device/{device}/group",
+        "/streaming/account/{account}/device/{device}/group",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
@@ -215,12 +216,12 @@ def get_groups_router(datastore, registry_file: str | None = None):
         return _bose_xml_str(result)
 
     @marge.post(
-        "/marge/streaming/account/{account}/group/",
+        "/streaming/account/{account}/group/",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
     @marge.post(
-        "/marge/streaming/account/{account}/group",
+        "/streaming/account/{account}/group",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
@@ -238,19 +239,20 @@ def get_groups_router(datastore, registry_file: str | None = None):
         group_id = result.get("id")
         if group_id:
             base_url = str(request.base_url).rstrip("/")
+            legacy_prefix = legacy_marge_prefix(request.url.path)
             response.headers["Location"] = (
-                f"{base_url}/marge/streaming/account/{account}/group/{group_id}"
+                f"{base_url}{legacy_prefix}/streaming/account/{account}/group/{group_id}"
             )
 
         return _bose_xml_str(result)
 
     @marge.put(
-        "/marge/streaming/account/{account}/group/{group}",
+        "/streaming/account/{account}/group/{group}",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
     @marge.post(
-        "/marge/streaming/account/{account}/group/{group}",
+        "/streaming/account/{account}/group/{group}",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
@@ -276,7 +278,7 @@ def get_groups_router(datastore, registry_file: str | None = None):
             return "<error>Invalid UTF-8 in request body</error>"
 
     @marge.delete(
-        "/marge/streaming/account/{account}/group/",
+        "/streaming/account/{account}/group/",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )
@@ -300,7 +302,7 @@ def get_groups_router(datastore, registry_file: str | None = None):
             )
 
     @marge.delete(
-        "/marge/streaming/account/{account}/group/{group}",
+        "/streaming/account/{account}/group/{group}",
         response_class=BoseXMLResponse,
         tags=["marge"],
     )

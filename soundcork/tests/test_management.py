@@ -83,7 +83,11 @@ class FakeDatastore:
 def test_marge_server_classifies_known_urls():
     assert _marge_server(None, BASE_URL) == "Unknown"
     assert _marge_server(BOSE_MARGE_URL, BASE_URL) == "Bose"
+    assert _marge_server(BASE_URL, BASE_URL) == "Soundcork"
+    assert _marge_server(f"{BASE_URL}/", BASE_URL) == "Soundcork"
     assert _marge_server(f"{BASE_URL}/marge", BASE_URL) == "Soundcork"
+    assert _marge_server(f"{BASE_URL}/marge/", BASE_URL) == "Soundcork"
+    assert _marge_server(f"{BASE_URL}/marge-old", BASE_URL) == "Other"
     assert _marge_server("http://other.example/marge", BASE_URL) == "Other"
 
 

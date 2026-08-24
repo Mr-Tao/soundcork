@@ -85,11 +85,16 @@ def test_notify_account_sources_updated_fans_out_to_stored_devices(monkeypatch):
         "192.0.2.11": "112233445566",
         "192.0.2.12": "66778899AABB",
     }
+    marge_by_host = {
+        "192.0.2.10": "http://unifi:8001",
+        "192.0.2.11": "http://unifi:8001/marge",
+        "192.0.2.12": "http://other:8001/marge",
+    }
     monkeypatch.setattr(
         "soundcork.devices.read_device_info",
         lambda host: (
             f'<info deviceID="{device_by_host[host]}">'
-            f"<margeURL>{'http://other:8001' if host == '192.0.2.12' else 'http://unifi:8001'}/marge</margeURL>"
+            f"<margeURL>{marge_by_host[host]}</margeURL>"
             "</info>"
         ),
     )
