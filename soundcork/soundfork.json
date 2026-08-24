@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "product": "soundfork",
+  "version": "0.1.0",
+  "capabilities": [
+    "marge.canonical-routes.v1",
+    "marge.legacy-prefix.v1"
+  ]
+}

@@ -1,8 +1,11 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from soundcork import manifest
 from soundcork.management import (
     BOSE_MARGE_URL,
     RegistrySpeaker,
@@ -279,6 +282,53 @@ def test_management_devices_endpoint_uses_current_speaker_info(monkeypatch):
     assert payload["devices"][0]["marge_server"] == "Bose"
     assert payload["devices"][0]["uses_this_soundcork"] is False
     assert payload["devices"][0]["playback_capability"] == "Needs repair"
+
+
+def test_management_capabilities_has_honest_missing_provenance(monkeypatch, tmp_path):
+    monkeypatch.setattr(manifest, "BUILD_INFO_PATH", tmp_path / "missing.json")
+    app = FastAPI()
+    app.include_router(router)
+
+    response = TestClient(app).get("/mgmt/capabilities")
+
+    assert response.status_code == 200
+    static_manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "soundfork.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert response.json() == {
+        **static_manifest,
+        "vcs_revision": None,
+        "source_dirty": None,
+        "managed_tree_sha256": None,
+    }
+
+
+def test_management_capabilities_loads_valid_build_sidecar(monkeypatch, tmp_path):
+    sidecar = tmp_path / "soundfork-build.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                **manifest.MANIFEST.as_dict(),
+                "vcs_revision": "a" * 40,
+                "source_dirty": False,
+                "managed_tree_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manifest, "BUILD_INFO_PATH", sidecar)
+    app = FastAPI()
+    app.include_router(router)
+
+    response = TestClient(app).get("/mgmt/capabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["vcs_revision"] == "a" * 40
+    assert payload["source_dirty"] is False
+    assert payload["managed_tree_sha256"] == "b" * 64
 
 
 def test_management_devices_endpoint_can_disable_registry(monkeypatch, tmp_path):

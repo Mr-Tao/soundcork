@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -34,6 +34,7 @@ from soundcork.devices import (
     read_device_info,
     read_runtime_sources,
 )
+from soundcork.manifest import capabilities_manifest
 from soundcork.marge_paths import is_soundcork_marge_url
 from soundcork.model import DeviceInfo
 from soundcork.spotify_service import SpotifyService
@@ -81,6 +82,16 @@ class ManagementDevice(BaseModel):
 
 class ManagementDevicesResponse(BaseModel):
     devices: list[ManagementDevice]
+
+
+class CapabilitiesResponse(BaseModel):
+    schema_version: Literal[1] = Field(alias="schema")
+    product: Literal["soundfork"]
+    version: str
+    vcs_revision: str | None
+    source_dirty: bool | None
+    managed_tree_sha256: str | None
+    capabilities: list[str]
 
 
 @dataclass
@@ -585,6 +596,12 @@ def list_management_devices(
 
 def _device_key(device: ManagementDevice) -> tuple[str, str]:
     return (device.account_id or "", device.name or device.device_id)
+
+
+@router.get("/capabilities", response_model=CapabilitiesResponse)
+def management_capabilities():
+    """Return static SoundFork capabilities and validated build provenance."""
+    return capabilities_manifest()
 
 
 @router.get("/devices", response_model=ManagementDevicesResponse)

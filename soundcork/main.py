@@ -40,6 +40,7 @@ from soundcork.devices import (
 )
 from soundcork.groups import get_groups_router
 from soundcork.groups_service import get_groups_service_router
+from soundcork.manifest import VERSION
 from soundcork.marge import (
     account_devices_xml,
     account_full_xml,
@@ -124,7 +125,7 @@ app = FastAPI(
     title="SoundCork",
     description=description,
     summary="Emulates SoundTouch servers.",
-    version="0.0.1",
+    version=VERSION,
     openapi_tags=tags_metadata,
     lifespan=lifespan,
 )

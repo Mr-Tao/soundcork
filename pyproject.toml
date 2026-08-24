@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soundcork"
-version = "1.0"
+version = "0.1.0"
 
 description = "A replacement server for Bose SoundTouch devices."
 readme = "README.md"
@@ -23,6 +23,9 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages]
 find = {}
+
+[tool.setuptools.package-data]
+soundcork = ["soundfork.json"]
 
 [tool.black]
 
